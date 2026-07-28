@@ -1,6 +1,9 @@
 """工具定义 + 执行 + 权限检查 + 错误重试"""
 
+import fnmatch
+import glob
 import json
+import locale
 import re
 import subprocess
 from pathlib import Path
@@ -248,7 +251,6 @@ def execute_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"错误: {e}"
     elif name == "run_shell":
-        import locale
         cmd = args.get("command", "")
 
         # 沙箱拦截
@@ -285,7 +287,6 @@ def execute_tool(name: str, args: dict) -> str:
         )
 
     elif name == "list_files":
-        import glob
         try:
             p = Path(args.get("path") or ".")
             pattern = args["pattern"]
@@ -297,7 +298,6 @@ def execute_tool(name: str, args: dict) -> str:
 
     elif name == "grep_search":
         try:
-            import fnmatch
             p = Path(args.get("path") or ".")
             regex = re.compile(args["pattern"])
             include = args.get("include")

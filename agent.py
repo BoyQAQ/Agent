@@ -192,7 +192,8 @@ def call_api(messages: list[dict], client: OpenAI, model: str,
             tool_calls_by_index: dict[int, dict] = {}
             input_tokens = 0
 
-            for chunk in stream:
+            with ui.live_response(model=model):
+                for chunk in stream:
                     if chunk.usage:
                         input_tokens = chunk.usage.prompt_tokens
 
@@ -220,6 +221,9 @@ def call_api(messages: list[dict], client: OpenAI, model: str,
                                         "arguments": tc.function.arguments or "",
                                     },
                                 }
+
+                # 流式结束后、Live 退出前设置 token 信息
+                ui.set_live_tokens(input_tokens, get_context_window(model))
 
             sorted_calls = [
                 tool_calls_by_index[i] for i in sorted(tool_calls_by_index.keys())
@@ -285,6 +289,35 @@ def _compression_pipeline(messages: list[dict],
         ]
         for i in tool_indices[:-KEEP_RECENT_RESULTS]:
             messages[i]["content"] = "[Old result cleared]"
+
+
+# ─── LLM 摘要压缩 ─────────────────────────────────────────
+
+def _try_compact(messages: list[dict], client: OpenAI, model: str,
+                 system_prompt: str | None = None) -> bool:
+    """尝试用 LLM 摘要压缩对话历史。成功返回 True，失败返回 False。
+    压缩后将 messages[1:] 替换为摘要，保留 system prompt (index 0)。
+    """
+    ui.print_compact_start()
+    try:
+        sp = system_prompt or "用一段话总结以下对话，保留关键决策、文件路径。"
+        summary_resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sp},
+                *messages[1:-1],
+                {"role": "user", "content": "用一段话总结以上对话。"},
+            ],
+        )
+        summary = summary_resp.choices[0].message.content or ""
+        messages[1:] = [
+            {"role": "user", "content": f"[之前的对话摘要]\n{summary}"},
+            {"role": "assistant", "content": "明白了，我已了解之前的上下文。请继续。"},
+        ]
+        ui.print_compact_done(len(summary))
+        return True
+    except Exception:
+        return False
 
 
 # ─── Plan Mode 处理 ──────────────────────────────────────
@@ -416,13 +449,9 @@ def _execute_agent_tool(args: dict, client: OpenAI, model: str,
     # 子 Agent 默认 bypassPermissions（父已授权），plan 模式例外
     sub_mode = "plan" if parent_mode == "plan" else "bypassPermissions"
 
-    # 复用同一个 run 函数，但传入自定义 system prompt + tools
-    # 子 Agent 的输出被 _output_buffer 收集，不打印到终端
-    from tools import TOOLS as all_tools
+    # 直接用 call_api 实现简化版子 agent loop
     sub_tools = config["tools"]
     sub_system = config["system_prompt"]
-
-    # 直接用 call_api 实现简化版子 agent loop
     sub_messages = [
         {"role": "system", "content": sub_system},
         {"role": "user", "content": prompt},
@@ -551,7 +580,7 @@ def run(user_message: str, permission_mode: str = "default",
         _session_allowlist.clear()
 
     # ── sideQuery: 复用同一模型做记忆召回 ──
-    async def _side_query(system: str, user_msg: str) -> str:
+    def _side_query(system: str, user_msg: str) -> str:
         resp = client.chat.completions.create(
             model=model,
             messages=[
@@ -563,7 +592,6 @@ def run(user_message: str, permission_mode: str = "default",
 
     # ── 记忆系统状态（新会话时初始化）──
     if messages is None or len(messages) <= 2:
-        import asyncio as _asyncio
         already_surfaced: set[str] = set()
         session_memory_bytes = 0
     else:
@@ -585,7 +613,7 @@ def run(user_message: str, permission_mode: str = "default",
                 and not memory_prefetch.consumed):
             memory_prefetch.consumed = True
             try:
-                memories = memory_prefetch.task.result()
+                memories = memory_prefetch.get_result()
                 if memories:
                     injection = format_memories_for_injection(memories)
                     last = messages[-1] if messages else None
@@ -605,26 +633,9 @@ def run(user_message: str, permission_mode: str = "default",
         est_tokens = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages) // 3
         eff_win = get_effective_window(model)
         if est_tokens > eff_win * 0.95 and len(messages) > 6:
-            ui.print_compact_start()
-            try:
-                summary_resp = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "用一段话总结以下对话，保留关键决策、文件路径。"},
-                        *messages[1:-1],
-                        {"role": "user", "content": "用一段话总结以上对话。"},
-                    ],
-                )
-                summary = summary_resp.choices[0].message.content or ""
-                messages[1:] = [
-                    {"role": "user", "content": f"[之前的对话摘要]\n{summary}"},
-                    {"role": "assistant", "content": "明白了，我已了解之前的上下文。请继续。"},
-                ]
+            if _try_compact(messages, client, model):
                 last_input_tokens = 0
-                ui.print_compact_done(len(summary))
                 continue
-            except Exception:
-                pass
 
         print()
         assistant_msg = call_api(messages, client, model)
@@ -637,30 +648,14 @@ def run(user_message: str, permission_mode: str = "default",
         stats["turns"] += 1
         last_api_call_time = time.time()
 
-        ui.print_token_usage(last_input_tokens, get_effective_window(model))
-
         util = input_tokens / get_effective_window(model) if input_tokens else 0
 
         if util >= AUTOCOMPACT_THRESHOLD and len(messages) > 6:
-            ui.print_compact_start()
-            try:
-                summary_resp = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "你是一个对话摘要器。用一段话总结以下对话，保留关键决策、文件路径和上下文。"},
-                        *messages[1:-1],
-                        {"role": "user", "content": "用一段话总结以上对话。"},
-                    ],
-                )
-                summary = summary_resp.choices[0].message.content or ""
-                messages[1:] = [
-                    {"role": "user", "content": f"[之前的对话摘要]\n{summary}"},
-                    {"role": "assistant", "content": "明白了，我已了解之前的上下文。请继续。"},
-                ]
-                ui.print_compact_done(len(summary))
+            if _try_compact(
+                messages, client, model,
+                system_prompt="你是一个对话摘要器。用一段话总结以下对话，保留关键决策、文件路径和上下文。",
+            ):
                 continue
-            except Exception:
-                pass
 
         tool_calls = assistant_msg.get("tool_calls")
         if not tool_calls:
@@ -770,4 +765,3 @@ def run(user_message: str, permission_mode: str = "default",
                 "tool_call_id": tc["id"],
                 "content": result,
             })
-            ui.print_tool_result(result)

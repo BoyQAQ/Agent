@@ -1,11 +1,104 @@
 """终端 UI — 参考 mini-claude 风格"""
 
-from rich.console import Console
+import os
+import time
+from contextlib import contextmanager
+
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.markdown import Markdown
+from rich.live import Live
+from rich.rule import Rule
+from rich.text import Text
 from rich import box
 
-console = Console(highlight=False)
+console = Console(highlight=False, force_terminal=True, legacy_windows=False)
+
+# ─── 流式响应状态 ─────────────────────────────────────────
+
+_live: Live | None = None        # Rich Live 实例
+_stream_text: str = ""           # 流式累积文本
+_stream_model: str = ""          # 当前模型名
+_stream_start: float = 0.0       # 开始时间
+_stream_tokens: int = 0          # API 返回的 input tokens
+_stream_ctx_win: int = 0         # 上下文窗口大小
+
+
+def _build_footer(elapsed: float) -> str:
+    """构建状态栏文本（模型 | 耗时 | Token用量）"""
+    parts = []
+    if _stream_model:
+        parts.append(_stream_model)
+    parts.append(f"{elapsed:.1f}s")
+    if _stream_tokens and _stream_ctx_win:
+        pct = _stream_tokens / _stream_ctx_win * 100
+        parts.append(
+            f"{_stream_tokens / 1000:.1f}K/"
+            f"{_stream_ctx_win / 1000:.0f}K ({pct:.0f}%)"
+        )
+    return "  │  ".join(parts)
+
+
+def _render_panel(border_style: str = "cyan") -> Panel:
+    """渲染带正文 + 分隔线 + 脚注的 Panel"""
+    body = Markdown(_stream_text or "⏳ 思考中...", code_theme="monokai")
+    elapsed = time.time() - _stream_start
+    footer_text = _build_footer(elapsed)
+    return Panel(
+        Group(body, Rule(style="dim"), Text(footer_text, style="dim")),
+        border_style=border_style, box=box.ROUNDED,
+    )
+
+
+def set_live_tokens(input_tokens: int, context_window: int) -> None:
+    """API 返回后在流式结束前调用，设置 token 用量供 footer 展示"""
+    global _stream_tokens, _stream_ctx_win
+    _stream_tokens = input_tokens
+    _stream_ctx_win = context_window
+    if _live:
+        _live.update(_render_panel())
+
+
+@contextmanager
+def live_response(model: str = ""):
+    """
+    流式响应上下文管理器。
+    用 Rich Live 在框内实时渲染，正文和脚注同步刷新。
+    """
+    global _live, _stream_text, _stream_model, _stream_start
+    global _stream_tokens, _stream_ctx_win
+    _stream_text = ""
+    _stream_model = model
+    _stream_start = time.time()
+    _stream_tokens = 0
+    _stream_ctx_win = 0
+    console.print()
+
+    _live = Live(_render_panel(), console=console, refresh_per_second=25, transient=True)
+    _live.start()
+    try:
+        yield
+    finally:
+        if _live:
+            _live.stop()
+            _live = None
+            # transient=True 自动清除 Live 内容，这里用 console.print 干净输出最终面板
+            console.print(_render_panel(border_style="green"))
+            # 重置状态
+            _stream_model = ""
+            _stream_start = 0.0
+            _stream_tokens = 0
+            _stream_ctx_win = 0
+
+
+def print_assistant_text(text: str):
+    """逐字追加到流式面板（通过 Live.update 替换面板内容）"""
+    global _stream_text
+    _stream_text += text
+    if _live:
+        _live.update(_render_panel())
+
 
 # ─── 工具图标 ────────────────────────────────────────────
 
@@ -36,10 +129,92 @@ def _tool_summary(name: str, args: dict) -> str:
     return ""
 
 
+# ─── 工具调用打印 ────────────────────────────────────────
+
+def print_tool_call(name: str, args: dict):
+    """打印工具调用状态行"""
+    icon = TOOL_ICONS.get(name, "🔧")
+    summary = _tool_summary(name, args)
+    console.print(f"  {icon} [bold blue]{name}[/bold blue] [dim]{summary}[/dim]")
+
+
+def print_tool_result(result: str):
+    """紧凑打印工具返回结果"""
+    if not result:
+        return
+    # 截断显示
+    short = result.replace("\n", " ")[:100]
+    if len(result) > 100:
+        short += f" ... ({len(result)} 字符)"
+    console.print(f"    [dim]→ {short}[/dim]")
+
+
+def print_permission_confirm(message: str):
+    """权限确认提示"""
+    console.print(f"  [yellow]⚠ {message}[/yellow]")
+
+
+def print_permission_deny(tool_name: str, message: str):
+    """权限拒绝提示"""
+    console.print(f"  [red]🚫 {tool_name}: {message}[/red]")
+
+
+def print_compact_start():
+    """压缩开始提示"""
+    console.print("  [yellow]⟳ 自动压缩中...[/yellow]", end="")
+
+
+def print_compact_done(chars: int):
+    """压缩完成提示"""
+    console.print(f" [green]✓ 已压缩为 {chars} 字符[/green]")
+
+
+def print_info(msg: str):
+    """通用信息提示"""
+    console.print(f"  [dim]ℹ {msg}[/dim]")
+
+
+def print_error(msg: str):
+    """通用错误提示"""
+    console.print(f"  [red]✗ {msg}[/red]")
+
+
+def print_config(config: dict):
+    """打印当前配置"""
+    table = Table(box=box.ROUNDED, border_style="cyan")
+    table.add_column("配置项", style="dim")
+    table.add_column("值")
+    table.add_row("base_url", str(config.get("base_url", "")))
+    table.add_row("api_key", (config.get("api_key", "")[:15] + "...") if config.get("api_key") else "(未设置)")
+    table.add_row("model", str(config.get("model", "")))
+    console.print(table)
+
+
+def print_model_list(models: list[str], current: str, keyword: str = ""):
+    """打印模型列表表格"""
+    title = f"可用模型 (共 {len(models)} 个)"
+    if keyword:
+        title += f" — 过滤: '{keyword}'"
+    table = Table(title=title, box=box.ROUNDED, border_style="cyan")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("模型名")
+    table.add_column("状态", width=10)
+    for i, m in enumerate(models, 1):
+        if m == current:
+            table.add_row(str(i), m, "[green]● 当前[/green]")
+        else:
+            table.add_row(str(i), m, "")
+    console.print(table)
+
+
+def append_tool(attempt: int, max_attempts: int, error_msg: str):
+    """API 重试状态提示"""
+    console.print(f"  [yellow]↻ 重试 {attempt}/{max_attempts} — {error_msg}[/yellow]")
+
+
 # ─── 启动横幅 ────────────────────────────────────────────
 
 def print_welcome(api_base: str, model: str, mode: str, workdir: str = ""):
-    import os
     cwd = workdir or os.getcwd()
     console.clear()
     console.print()
@@ -58,87 +233,3 @@ def print_welcome(api_base: str, model: str, mode: str, workdir: str = ""):
         box=box.ROUNDED, border_style="cyan",
     ))
     console.print("[dim]  /help 查看所有命令[/dim]")
-
-
-# ─── 输出函数 ────────────────────────────────────────────
-
-def print_assistant_text(text: str):
-    import sys
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
-def print_tool_call(name: str, args: dict):
-    icon = TOOL_ICONS.get(name, "🔨")
-    summary = _tool_summary(name, args)
-    console.print(f"\n  [yellow]{icon} {name}[/yellow][dim] {summary}[/dim]")
-
-
-def print_tool_result(result: str):
-    lines = result.count("\n") + 1
-    chars = len(result)
-    preview = result[:200].replace("\n", " ")
-    if result.startswith("错误") or result.startswith("❌"):
-        console.print(f"    [red]✗ {preview}[/red]")
-    else:
-        console.print(f"    [dim]→ {lines}行 {chars}字[/dim]")
-
-
-def print_permission_deny(tool: str, message: str):
-    console.print(f"\n  [red]⊘ {tool} — {message}[/red]")
-
-
-def print_permission_confirm(message: str):
-    console.print(f"\n  [yellow]⚠ {message}[/yellow]")
-
-
-def print_token_usage(input_tokens: int, effective_window: int):
-    util = input_tokens / effective_window if effective_window else 0
-    bar_len = 20
-    filled = int(bar_len * util)
-    bar = "█" * filled + "░" * (bar_len - filled)
-    color = "green" if util < 0.5 else "yellow" if util < 0.85 else "red"
-    console.print(f"\n  [{color}]{bar}[/{color}] {util:.0%}", end="")
-
-
-def print_compact_start():
-    console.print("  [yellow]⟳ 压缩中...[/yellow]")
-
-
-def print_compact_done(summary_len: int):
-    console.print(f"  [green]✓ 压缩完成 ({summary_len} 字)[/green]")
-
-
-def print_retry(attempt: int, max_retries: int, reason: str):
-    console.print(f"  [yellow]↻ 重试 {attempt}/{max_retries}[/yellow]")
-
-
-def print_model_list(models: list[str], current_model: str, keyword: str = ""):
-    if keyword:
-        console.print(f"\n  [dim]过滤: '{keyword}' → {len(models)} 匹配[/dim]")
-    table = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Model", style="white")
-    for i, m in enumerate(models, 1):
-        if m == current_model:
-            table.add_row(str(i), f"[green]{m} ← 当前[/green]")
-        else:
-            table.add_row(str(i), m)
-    console.print(table)
-    console.print("\n  [dim]序号=选择 | 关键词=过滤 | 模型名=直接切换 | 回车=取消[/dim]")
-
-
-def print_config(api_config: dict):
-    console.print()
-    console.print(f"  [dim]base_url:[/dim] {api_config['base_url']}")
-    key_preview = api_config['api_key'][:15] + "..." if api_config['api_key'] else "(未设置)"
-    console.print(f"  [dim]api_key:[/dim]  {key_preview}")
-    console.print(f"  [dim]model:[/dim]    [green]{api_config['model']}[/green]")
-
-
-def print_info(msg: str):
-    console.print(f"  [dim]{msg}[/dim]")
-
-
-def print_error(msg: str):
-    console.print(f"  [red]✗ {msg}[/red]")

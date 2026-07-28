@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from memory import _parse_frontmatter
+
 
 # ─── 数据结构 ────────────────────────────────────────────
 
@@ -19,28 +21,6 @@ class SkillDefinition:
     prompt_template: str = ""
     source: str = "project"  # "project" or "user"
     skill_dir: str = ""
-
-
-# ─── 基础解析 ────────────────────────────────────────────
-
-def _parse_frontmatter(raw: str) -> tuple[dict, str]:
-    lines = raw.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return {}, raw
-    end = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end = i
-            break
-    if end == -1:
-        return {}, raw
-    meta = {}
-    for line in lines[1:end]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            meta[k.strip()] = v.strip()
-    body = "\n".join(lines[end + 1:]).strip()
-    return meta, body
 
 
 # ─── 技能发现 ────────────────────────────────────────────

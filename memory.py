@@ -1,13 +1,12 @@
 """记忆系统 — 4 种类型、文件存储、语义召回、异步预取"""
 
-import asyncio
 import hashlib
 import json
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 # ─── 路径管理 ────────────────────────────────────────────
 
@@ -29,8 +28,6 @@ MAX_INDEX_BYTES = 25000
 MAX_MEMORY_FILES = 200
 MAX_MEMORY_BYTES_PER_FILE = 4096
 MAX_SESSION_MEMORY_BYTES = 60 * 1024
-
-SideQueryFn = Callable[[str, str], Any]  # async (system, user_msg) -> str
 
 
 # ─── 数据结构 ────────────────────────────────────────────
@@ -202,12 +199,12 @@ SELECT_MEMORIES_PROMPT = """你正在为一个 AI 编程助手选择相关记忆
 - 如果没有明显有用的记忆，返回空数组。"""
 
 
-async def select_relevant_memories(
+def select_relevant_memories(
     query: str,
-    side_query: SideQueryFn,
+    side_query: Callable[[str, str], str],
     already_surfaced: set[str],
 ) -> list[RelevantMemory]:
-    """调用模型做语义匹配，选择相关记忆"""
+    """调用模型做语义匹配，选择相关记忆（同步版本）"""
     headers = scan_memory_headers()
     if not headers:
         return []
@@ -226,7 +223,7 @@ async def select_relevant_memories(
     manifest = "\n".join(manifest_lines)
 
     try:
-        text = await side_query(
+        text = side_query(
             SELECT_MEMORIES_PROMPT,
             f"Query: {query}\n\nAvailable memories:\n{manifest}",
         )
@@ -262,25 +259,29 @@ async def select_relevant_memories(
         return []
 
 
-# ─── 异步预取 ────────────────────────────────────────────
+# ─── 同步预取 ───────────────────────────────────
 
 class MemoryPrefetch:
-    def __init__(self, task: asyncio.Task):
-        self.task = task
+    """记忆预取结果容器"""
+    def __init__(self, result: list[RelevantMemory] | None):
+        self._result = result
         self.consumed = False
 
     @property
     def settled(self) -> bool:
-        return self.task.done()
+        return True
+
+    def get_result(self) -> list[RelevantMemory]:
+        return self._result or []
 
 
 def start_memory_prefetch(
     query: str,
-    side_query: SideQueryFn,
+    side_query: Callable[[str, str], str],
     already_surfaced: set[str],
     session_memory_bytes: int,
 ) -> MemoryPrefetch | None:
-    """启动异步记忆预取，返回句柄用于后续轮询"""
+    """同步执行记忆预取"""
     # 门控 1: 单词查询跳过
     if not re.search(r"\s", query.strip()):
         return None
@@ -295,10 +296,11 @@ def start_memory_prefetch(
     if not has_memories:
         return None
 
-    task = asyncio.create_task(
-        select_relevant_memories(query, side_query, already_surfaced)
-    )
-    return MemoryPrefetch(task)
+    try:
+        result = select_relevant_memories(query, side_query, already_surfaced)
+        return MemoryPrefetch(result)
+    except Exception:
+        return None
 
 
 def format_memories_for_injection(memories: list[RelevantMemory]) -> str:
