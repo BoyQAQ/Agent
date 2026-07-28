@@ -17,7 +17,7 @@ console = Console(highlight=False, force_terminal=True, legacy_windows=False)
 
 # ─── 流式响应状态 ─────────────────────────────────────────
 
-_live: Live | None = None        # Rich Live 实例
+_live: Live | None = None        # 持久 Live 实例（整个会话复用）
 _stream_text: str = ""           # 流式累积文本
 _stream_model: str = ""          # 当前模型名
 _stream_start: float = 0.0       # 开始时间
@@ -65,6 +65,7 @@ def live_response(model: str = ""):
     """
     流式响应上下文管理器。
     用 Rich Live 在框内实时渲染，正文和脚注同步刷新。
+    整个会话复用同一个 Live 实例，减少 stop/start 切换闪烁。
     """
     global _live, _stream_text, _stream_model, _stream_start
     global _stream_tokens, _stream_ctx_win
@@ -75,16 +76,18 @@ def live_response(model: str = ""):
     _stream_ctx_win = 0
     console.print()
 
-    _live = Live(_render_panel(), console=console, refresh_per_second=25, transient=True)
+    if _live is not None:
+        _live.stop()
+    _live = Live(_render_panel(), console=console, refresh_per_second=8, transient=False)
     _live.start()
+
     try:
         yield
     finally:
         if _live:
+            _live.update(_render_panel(border_style="green"))
             _live.stop()
             _live = None
-            # transient=True 自动清除 Live 内容，这里用 console.print 干净输出最终面板
-            console.print(_render_panel(border_style="green"))
             # 重置状态
             _stream_model = ""
             _stream_start = 0.0
