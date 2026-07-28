@@ -260,15 +260,17 @@ def execute_tool(name: str, args: dict) -> str:
 
         try:
             enc = locale.getpreferredencoding()
+            # 用 bytes 模式捕获，手动 decode，避免 Windows 上
+            # text=True 的 reader 线程因 GBK 不兼容字节触发 UnicodeDecodeError
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=30, encoding=enc, errors="replace"
+                cmd, shell=True, capture_output=True,
+                timeout=30,
             )
             output = ""
             if result.stdout:
-                output += result.stdout
+                output += result.stdout.decode(enc, errors="replace")
             if result.stderr:
-                output += f"\n[stderr]\n{result.stderr}"
+                output += "\n[stderr]\n" + result.stderr.decode(enc, errors="replace")
             output = output[:4000]
             if result.returncode != 0:
                 return f"命令失败 (exit {result.returncode})\n{output}"
