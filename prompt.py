@@ -1,6 +1,7 @@
 """System Prompt 动态注入 — CLAUDE.md 层级发现 + Git 上下文"""
 
 import os
+import locale
 import re
 import subprocess
 from datetime import date
@@ -118,19 +119,20 @@ def _load_claude_md() -> str:
 
 def _get_git_context() -> str:
     """获取当前 git 仓库上下文（branch + 最近 5 commits + status）"""
+    enc = locale.getpreferredencoding()
     try:
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            text=True, timeout=3
-        ).strip()
+            timeout=3
+        ).strip().decode(enc, errors="replace")
         log = subprocess.check_output(
             ["git", "log", "--oneline", "-5"],
-            text=True, timeout=3
-        ).strip()
+            timeout=3
+        ).strip().decode(enc, errors="replace")
         status = subprocess.check_output(
             ["git", "status", "--short"],
-            text=True, timeout=3
-        ).strip()
+            timeout=3
+        ).strip().decode(enc, errors="replace")
         parts = [f"Git branch: {branch}"]
         if log:
             parts.append(f"Recent commits:\n{log}")
