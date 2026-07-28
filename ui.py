@@ -52,12 +52,12 @@ def _render_panel(border_style: str = "cyan") -> Panel:
 
 
 def set_live_tokens(input_tokens: int, context_window: int) -> None:
-    """API 返回后在流式结束前调用，设置 token 用量供 footer 展示"""
+    """API 返回后在流式结束前调用，设置 token 用量，切换绿色边框表示完成"""
     global _stream_tokens, _stream_ctx_win
     _stream_tokens = input_tokens
     _stream_ctx_win = context_window
     if _live:
-        _live.update(_render_panel())
+        _live.update(_render_panel(border_style="green"))
 
 
 @contextmanager
@@ -85,7 +85,6 @@ def live_response(model: str = ""):
         yield
     finally:
         if _live:
-            _live.update(_render_panel(border_style="green"))
             _live.stop()
             _live = None
             # 重置状态
