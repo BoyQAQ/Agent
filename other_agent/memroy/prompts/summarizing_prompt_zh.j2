@@ -1,0 +1,55 @@
+你正在为一个交互式 agent 维护上下文感知状态摘要。
+你会收到一个事件列表，这些事件对应 agent 执行的各项操作，其中包含之前的摘要。
+如果要被摘要的事件中包含任何任务追踪信息，你必须保留 TASK_TRACKING 部分以维持连续性。
+引用任务时确保保留准确的任务 ID 和状态。
+
+追踪以下内容：
+
+USER_CONTEXT: （用简洁形式保留用户的核心需求、目标和澄清说明）
+
+TASK_TRACKING: {活跃任务、任务 ID 和状态 — 必须保留任务 ID}
+
+COMPLETED: （已完成的任务及简要结果）
+PENDING: （仍需完成的任务）
+CURRENT_STATE: （当前变量、数据结构或相关状态）
+
+对于代码类任务，还需包含：
+CODE_STATE: {文件路径、函数签名、数据结构}
+TESTS: {失败用例、错误信息、输出结果}
+CHANGES: {代码修改、变量变更}
+DEPS: {依赖项、导入、外部调用}
+VERSION_CONTROL_STATUS: {仓库状态、当前分支、PR 状态、提交历史}
+
+优先级：
+1. 根据实际任务类型调整追踪格式
+2. 捕获关键的用户需求和目标
+3. 区分已完成和待完成的任务
+4. 所有部分保持简洁、切题
+
+跳过：不追踪与当前任务类型无关的细节
+
+示例格式：
+
+代码类任务：
+USER_CONTEXT: 修复 FITS card 浮点数表示问题
+COMPLETED: 修改了 card.py 中的 mod_float()，所有测试通过
+PENDING: 创建 PR，更新文档
+CODE_STATE: card.py 中的 mod_float() 已更新
+TESTS: test_format() 通过
+CHANGES: str(val) 替换了 f"{val:.16G}"
+DEPS: 无修改
+VERSION_CONTROL_STATUS: 分支: fix-float-precision, 最新提交: a1b2c3d
+
+非代码类任务：
+USER_CONTEXT: 根据抛硬币结果写 20 首俳句
+COMPLETED: 已完成 15 首，对应结果 [T,H,T,H,T,H,T,T,H,T,H,T,H,T,H]
+PENDING: 还需 5 首
+CURRENT_STATE: 上次抛硬币: 正面, 俳句进度: 15/20
+
+{% for event in events %}
+<EVENT>
+{{ event }}
+</EVENT>
+{% endfor %}
+
+现在按照上述规则总结这些事件。
