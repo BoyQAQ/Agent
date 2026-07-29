@@ -567,7 +567,18 @@ def main():
 
     effective_mode = permission_mode
 
+    # -- Dreaming: idle-time self-reflection --
+    from dream import get_dreamer
+    dreamer = get_dreamer(idle_seconds=60)
+    dreamer.start()
+
     while True:
+        # Show dream results when user returns
+        dream_output = dreamer.result
+        if dream_output:
+            ui.print_info("[Zz] Dream reflection done:")
+            print(f"  [dim]{dream_output[:500]}[/dim]")
+
         try:
             user_input = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -575,15 +586,19 @@ def main():
             _auto_save()
             print(f"\n  Resume this session with:")
             print(f"  python main.py --resume {state['session_id']}\n")
+            dreamer.stop()
             break
         if not user_input:
             continue
+
+        dreamer.touch()
 
         result = _dispatch_command(user_input, state)
         if result == QUIT:
             _auto_save()
             print(f"\n  Resume this session with:")
             print(f"  python main.py --resume {state['session_id']}\n")
+            dreamer.stop()
             break
         if result == HANDLED:
             continue
