@@ -85,15 +85,14 @@ def live_response(model: str = ""):
         yield
     finally:
         if _live:
-            # transient=False + stop: 最后一帧直接留在屏幕，不额外 console.print
-            # 全程只有 Live 刷新线程渲染，避免触底时多路径编码不一致
+            # set_live_tokens 已用 Live.update 设置了绿色边框，
+            # stop 定格面板（transient=False），不额外 console.print
             _live.stop()
             _live = None
-            # 重置状态
-            _stream_model = ""
-            _stream_start = 0.0
-            _stream_tokens = 0
-            _stream_ctx_win = 0
+        _stream_model = ""
+        _stream_start = 0.0
+        _stream_tokens = 0
+        _stream_ctx_win = 0
 
 
 def print_assistant_text(text: str):
