@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 import urllib.request
 import urllib.error
 import ui
@@ -165,6 +166,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cwd", default=None, help="切换工作目录")
     parser.add_argument("--no-mcp", action="store_true", default=False,
                         help="禁用 MCP 外部工具（默认已禁用）")
+    parser.add_argument("--resume", default=None,
+                        help="恢复指定会话 ID")
 
     # 位置参数：一次性 prompt（多个单词自动拼接）
     parser.add_argument("prompt", nargs="*", help="一次性提问（多个参数自动拼接）")
@@ -220,12 +223,13 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
     if cmd == "/clear":
         state["chat_messages"] = None
         state["chat_stats"] = None
+        state["session_id"] = str(uuid.uuid4())
         try:
             from session import delete_session
             delete_session("__auto__")
         except Exception:
             pass
-        ui.print_info("对话历史已清空")
+        ui.print_info("对话历史已清空（新会话 ID）")
         return HANDLED
 
     # ── /plan ──
@@ -484,11 +488,12 @@ def main():
         "enable_mcp": enable_mcp,
         "chat_messages": None,   # None = 新会话
         "chat_stats": None,      # 跨轮累计 token 统计
+        "session_id": str(uuid.uuid4()),  # 本次会话唯一标识
     }
 
-    # ── 自动恢复上次会话 ──
+    # ── 自动恢复 / 保存 ──
     def _auto_save():
-        """静默保存当前对话到 __auto__"""
+        """静默保存当前对话到 __auto__ 和 session_id"""
         if state["chat_messages"]:
             try:
                 from session import save_session
@@ -498,32 +503,47 @@ def main():
                     stats=state["chat_stats"],
                     model=state["api_config"]["model"],
                 )
+                save_session(
+                    name=state["session_id"],
+                    messages=state["chat_messages"],
+                    stats=state["chat_stats"],
+                    model=state["api_config"]["model"],
+                )
             except Exception:
-                pass  # 保存失败不影响主流程
+                pass
 
     def _auto_load():
-        """启动时自动恢复 __auto__ 会话"""
+        """启动时自动恢复会话"""
+        # --resume 指定 ID 优先
+        resume_id = getattr(args, "resume", None)
         try:
             from session import load_session
-            s = load_session("__auto__")
+            target = resume_id or "__auto__"
+            s = load_session(target)
             if s and s.get("messages"):
                 state["chat_messages"] = s["messages"]
                 state["chat_stats"] = s.get("stats")
+                state["session_id"] = s.get("name", state["session_id"])
                 msg_count = len(s["messages"])
-                ui.print_info(f"已恢复上次会话 ({msg_count} 条消息)")
+                ui.print_info(f"已恢复会话 {state['session_id']} ({msg_count} 条消息)")
+                return
         except Exception:
             pass
+        if resume_id:
+            ui.print_error(f"未找到会话: {resume_id}")
 
     _auto_load()
 
-    effective_mode = permission_mode  # 缓存当前生效模式，避免重复表达式
+    effective_mode = permission_mode
 
     while True:
         try:
             user_input = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
+            print()
             _auto_save()
+            print(f"\n  Resume this session with:")
+            print(f"  python main.py --resume {state['session_id']}\n")
             break
         if not user_input:
             continue
@@ -531,6 +551,8 @@ def main():
         result = _dispatch_command(user_input, state)
         if result == QUIT:
             _auto_save()
+            print(f"\n  Resume this session with:")
+            print(f"  python main.py --resume {state['session_id']}\n")
             break
         if result == HANDLED:
             continue
@@ -544,7 +566,7 @@ def main():
             enable_mcp=state["enable_mcp"],
             stats=state["chat_stats"],
         )
-        _auto_save()  # 每轮自动保存
+        _auto_save()
         print()
 
 
