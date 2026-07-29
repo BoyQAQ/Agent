@@ -76,22 +76,25 @@ def live_response(model: str = ""):
     _stream_ctx_win = 0
     console.print()
 
-    if _live is None:
-        # 整个会话只创建一次 Live，永不 stop
-        _live = Live(_render_panel(), console=console, refresh_per_second=4, transient=False)
-        _live.start()
-    else:
-        _live.update(_render_panel())
+    if _live is not None:
+        _live.stop()
+    _live = Live(_render_panel(), console=console, refresh_per_second=8, transient=True)
+    _live.start()
 
     try:
         yield
     finally:
-        # 不 stop，面板永远留在屏幕，始终走 Live 刷新线程渲染（emoji 不乱码）
-        # 重置状态
-        _stream_model = ""
-        _stream_start = 0.0
-        _stream_tokens = 0
-        _stream_ctx_win = 0
+        if _live:
+            # 先 stop（transient=True 清除 Live 占用的屏幕区域）
+            _live.stop()
+            _live = None
+            # 再用 console.print 独立渲染最终面板，与 Live 管线完全分离
+            console.print(_render_panel(border_style="green"))
+            # 重置状态
+            _stream_model = ""
+            _stream_start = 0.0
+            _stream_tokens = 0
+            _stream_ctx_win = 0
 
 
 def print_assistant_text(text: str):
