@@ -220,6 +220,11 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
     if cmd == "/clear":
         state["chat_messages"] = None
         state["chat_stats"] = None
+        try:
+            from session import delete_session
+            delete_session("__auto__")
+        except Exception:
+            pass
         ui.print_info("对话历史已清空")
         return HANDLED
 
@@ -481,6 +486,36 @@ def main():
         "chat_stats": None,      # 跨轮累计 token 统计
     }
 
+    # ── 自动恢复上次会话 ──
+    def _auto_save():
+        """静默保存当前对话到 __auto__"""
+        if state["chat_messages"]:
+            try:
+                from session import save_session
+                save_session(
+                    name="__auto__",
+                    messages=state["chat_messages"],
+                    stats=state["chat_stats"],
+                    model=state["api_config"]["model"],
+                )
+            except Exception:
+                pass  # 保存失败不影响主流程
+
+    def _auto_load():
+        """启动时自动恢复 __auto__ 会话"""
+        try:
+            from session import load_session
+            s = load_session("__auto__")
+            if s and s.get("messages"):
+                state["chat_messages"] = s["messages"]
+                state["chat_stats"] = s.get("stats")
+                msg_count = len(s["messages"])
+                ui.print_info(f"已恢复上次会话 ({msg_count} 条消息)")
+        except Exception:
+            pass
+
+    _auto_load()
+
     effective_mode = permission_mode  # 缓存当前生效模式，避免重复表达式
 
     while True:
@@ -488,12 +523,14 @@ def main():
             user_input = input("\n> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!")
+            _auto_save()
             break
         if not user_input:
             continue
 
         result = _dispatch_command(user_input, state)
         if result == QUIT:
+            _auto_save()
             break
         if result == HANDLED:
             continue
@@ -507,6 +544,7 @@ def main():
             enable_mcp=state["enable_mcp"],
             stats=state["chat_stats"],
         )
+        _auto_save()  # 每轮自动保存
         print()
 
 
