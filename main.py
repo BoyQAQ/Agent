@@ -203,6 +203,9 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
   /plan        切换只读规划模式
   /model [关键词] 选择模型（可选关键词过滤）
   /config      手动设置 API 配置
+  /save <名称>  保存当前对话
+  /load <名称>  加载历史对话
+  /sessions    列出已保存的对话
   /memory      查看记忆列表
   /skills      查看技能列表
   /cd <路径>    切换工作目录
@@ -249,6 +252,76 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
             )
         except Exception as e:
             ui.print_error(f"切换失败: {e}")
+        return HANDLED
+
+    # ── /save ──
+    if cmd == "/save":
+        if not arg:
+            ui.print_info("用法: /save <会话名>")
+            return HANDLED
+        if not state["chat_messages"]:
+            ui.print_info("当前没有活跃的对话可保存。")
+            return HANDLED
+        try:
+            from session import save_session
+            sid = save_session(
+                name=arg,
+                messages=state["chat_messages"],
+                stats=state["chat_stats"],
+                model=state["api_config"]["model"],
+            )
+            ui.print_info(f"会话已保存 (id={sid})")
+        except Exception as e:
+            ui.print_error(f"保存失败: {e}")
+        return HANDLED
+
+    # ── /load ──
+    if cmd == "/load":
+        if not arg:
+            ui.print_info("用法: /load <会话名或ID>")
+            return HANDLED
+        try:
+            from session import load_session
+            # 支持按 ID 加载
+            try:
+                lookup = int(arg)
+            except ValueError:
+                lookup = arg
+            session = load_session(lookup)
+            if not session:
+                ui.print_error(f"未找到会话: {arg}")
+                return HANDLED
+            state["chat_messages"] = session["messages"]
+            state["chat_stats"] = session.get("stats")
+            # 如果会话保存了 model，可选择性恢复
+            if session.get("model") and session["model"] != state["api_config"]["model"]:
+                ui.print_info(f"提示: 会话使用的模型是 {session['model']}，当前是 {state['api_config']['model']}")
+            msg_count = len(session.get("messages", []))
+            ui.print_info(f"已加载会话 '{session['name']}' ({msg_count} 条消息)")
+        except Exception as e:
+            ui.print_error(f"加载失败: {e}")
+        return HANDLED
+
+    # ── /sessions ──
+    if cmd == "/sessions":
+        try:
+            from session import list_sessions
+            sessions = list_sessions()
+            if not sessions:
+                ui.print_info("暂无保存的会话。使用 /save <名称> 保存。")
+            else:
+                ui.print_info(f"{len(sessions)} 个会话:")
+                import datetime
+                for s in sessions:
+                    t = datetime.datetime.fromtimestamp(
+                        s["saved_at"]
+                    ).strftime("%m-%d %H:%M") if s.get("saved_at") else "未知"
+                    print(
+                        f"    [id={s['id']}] {s['name']}  "
+                        f"[dim]({s['message_count']} 条消息, {t})[/dim]"
+                    )
+        except Exception as e:
+            ui.print_error(f"查询失败: {e}")
         return HANDLED
 
     # ── /model ──
