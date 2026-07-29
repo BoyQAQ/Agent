@@ -1,7 +1,6 @@
 """终端 UI — 参考 mini-claude 风格"""
 
 import os
-import sys
 import time
 from contextlib import contextmanager
 
@@ -9,6 +8,7 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.markdown import Markdown
+from rich.live import Live
 from rich.rule import Rule
 from rich.text import Text
 from rich import box
@@ -17,14 +17,12 @@ console = Console(highlight=False, force_terminal=True, legacy_windows=False)
 
 # ─── 流式响应状态 ─────────────────────────────────────────
 
+_live: Live | None = None        # 持久 Live 实例（整个会话复用）
 _stream_text: str = ""           # 流式累积文本
 _stream_model: str = ""          # 当前模型名
 _stream_start: float = 0.0       # 开始时间
 _stream_tokens: int = 0          # API 返回的 input tokens
 _stream_ctx_win: int = 0         # 上下文窗口大小
-
-# 底部输入行预留高度
-BOTTOM_RESERVE = 3
 
 
 def _build_footer(elapsed: float) -> str:
@@ -54,50 +52,43 @@ def _render_panel(border_style: str = "cyan") -> Panel:
 
 
 def set_live_tokens(input_tokens: int, context_window: int) -> None:
-    """API 返回后设置 token 用量"""
+    """API 返回后在流式结束前调用，设置 token 用量，切换绿色边框表示完成"""
     global _stream_tokens, _stream_ctx_win
     _stream_tokens = input_tokens
     _stream_ctx_win = context_window
-
-
-def _ensure_bottom_space() -> None:
-    """在渲染面板前垫空行，确保面板不会触及终端绝对底部"""
-    # 始终垫 BOTTOM_RESERVE 行，让面板底边与终端底边保持距离
-    # 即使当前不在底部，多余空行仅增加视觉间距，无副作用
-    sys.stdout.write("\n" * BOTTOM_RESERVE)
-    sys.stdout.flush()
+    if _live:
+        _live.update(_render_panel(border_style="green"))
 
 
 @contextmanager
 def live_response(model: str = ""):
     """
     流式响应上下文管理器。
-    流式阶段：sys.stdout.write 纯文本输出（emoji 天然安全）
-    结束后：console.print 渲染 Rich Panel（确保底部有空间）
+    用 Rich Live 在框内实时渲染，正文和脚注同步刷新。
+    整个会话复用同一个 Live 实例，减少 stop/start 切换闪烁。
     """
-    global _stream_text, _stream_model, _stream_start, _stream_tokens, _stream_ctx_win
+    global _live, _stream_text, _stream_model, _stream_start
+    global _stream_tokens, _stream_ctx_win
     _stream_text = ""
     _stream_model = model
     _stream_start = time.time()
     _stream_tokens = 0
     _stream_ctx_win = 0
     console.print()
+
+    if _live is not None:
+        _live.stop()
+    _live = Live(_render_panel(), console=console, refresh_per_second=8, transient=False)
+    _live.start()
+
     try:
         yield
     finally:
-        # 确保底部有空间，防止面板触底时终端滚动破坏 emoji
-        _ensure_bottom_space()
-        # 渲染最终面板
-        elapsed = time.time() - _stream_start
-        footer_text = _build_footer(elapsed)
-        console.print(Panel(
-            Group(
-                Markdown(_stream_text or "(无输出)", code_theme="monokai"),
-                Rule(style="dim"),
-                Text(footer_text, style="dim"),
-            ),
-            border_style="green", box=box.ROUNDED,
-        ))
+        if _live:
+            # set_live_tokens 已用 Live.update 设置了绿色边框，
+            # stop 定格面板（transient=False），不额外 console.print
+            _live.stop()
+            _live = None
         _stream_model = ""
         _stream_start = 0.0
         _stream_tokens = 0
@@ -105,11 +96,11 @@ def live_response(model: str = ""):
 
 
 def print_assistant_text(text: str):
-    """逐字流式输出（sys.stdout.write，不经 Rich，emoji 不乱码）"""
+    """逐字追加到流式面板（通过 Live.update 替换面板内容）"""
     global _stream_text
-    sys.stdout.write(text)
-    sys.stdout.flush()
     _stream_text += text
+    if _live:
+        _live.update(_render_panel())
 
 
 # ─── 工具图标 ────────────────────────────────────────────
