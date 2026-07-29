@@ -41,6 +41,23 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "精确替换文件中的字符串。old_string 必须唯一匹配（如匹配多处会报错提示细化）。可用 replace_all 替换所有匹配。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "要编辑的文件路径"},
+                    "old_string": {"type": "string", "description": "要被替换的精确字符串（必须唯一匹配）"},
+                    "new_string": {"type": "string", "description": "替换后的新字符串"},
+                    "replace_all": {"type": "boolean", "description": "是否替换所有匹配（默认 false，只替换第一个）"},
+                },
+                "required": ["file_path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_shell",
             "description": "执行 shell 命令",
             "parameters": {
@@ -248,6 +265,52 @@ def execute_tool(name: str, args: dict) -> str:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(args["content"], encoding="utf-8")
             return f"成功写入 {args['file_path']} ({len(args['content'])} 字符)"
+        except Exception as e:
+            return f"错误: {e}"
+    elif name == "edit_file":
+        try:
+            p = Path(args["file_path"])
+            if not p.is_file():
+                return f"错误: 文件不存在 — {args['file_path']}"
+            content = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return f"错误: 文件不存在 — {args['file_path']}"
+        except UnicodeDecodeError:
+            try:
+                content = p.read_text(encoding="gbk")
+            except Exception as e:
+                return f"错误: 文件编码无法识别 — {e}"
+        except Exception as e:
+            return f"错误: {e}"
+
+        old = args["old_string"]
+        new = args["new_string"]
+        replace_all = args.get("replace_all", False)
+
+        if old == new:
+            return "错误: old_string 和 new_string 相同，无需编辑"
+
+        count = content.count(old)
+        if count == 0:
+            # 尝试给点提示：找相似的行
+            lines = content.split("\n")
+            hints = [l.strip()[:80] for l in lines if old[:20].strip() in l]
+            hint_msg = ""
+            if hints:
+                hint_msg = f"\n  文件中包含类似的行: " + "; ".join(hints[:3])
+            return f"错误: 未找到匹配的字符串。old_string 在文件中出现了 0 次。{hint_msg}"
+
+        if count > 1 and not replace_all:
+            return (
+                f"错误: old_string 匹配了 {count} 处。请用更精确的上下文使其唯一，"
+                f"或设置 replace_all=true 替换全部 {count} 处。"
+            )
+
+        try:
+            new_content = content.replace(old, new)
+            p.write_text(new_content, encoding="utf-8")
+            times = count if replace_all else 1
+            return f"成功编辑 {args['file_path']}（替换了 {times} 处，{len(new_content)} 字符）"
         except Exception as e:
             return f"错误: {e}"
     elif name == "run_shell":
