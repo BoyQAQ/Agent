@@ -1,6 +1,7 @@
 """终端 UI — 参考 mini-claude 风格"""
 
 import os
+import sys
 import time
 from contextlib import contextmanager
 
@@ -8,7 +9,6 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.markdown import Markdown
-from rich.live import Live
 from rich.rule import Rule
 from rich.text import Text
 from rich import box
@@ -17,7 +17,6 @@ console = Console(highlight=False, force_terminal=True, legacy_windows=False)
 
 # ─── 流式响应状态 ─────────────────────────────────────────
 
-_live: Live | None = None        # 持久 Live 实例（整个会话复用）
 _stream_text: str = ""           # 流式累积文本
 _stream_model: str = ""          # 当前模型名
 _stream_start: float = 0.0       # 开始时间
@@ -40,69 +39,54 @@ def _build_footer(elapsed: float) -> str:
     return "  │  ".join(parts)
 
 
-def _render_panel(border_style: str = "cyan") -> Panel:
-    """渲染带正文 + 分隔线 + 脚注的 Panel"""
-    body = Markdown(_stream_text or "⏳ 思考中...", code_theme="monokai")
-    elapsed = time.time() - _stream_start
-    footer_text = _build_footer(elapsed)
-    return Panel(
-        Group(body, Rule(style="dim"), Text(footer_text, style="dim")),
-        border_style=border_style, box=box.ROUNDED,
-    )
-
-
 def set_live_tokens(input_tokens: int, context_window: int) -> None:
-    """API 返回后在流式结束前调用，设置 token 用量，切换绿色边框表示完成"""
+    """API 返回后设置 token 用量（在 live_response 内部调用）"""
     global _stream_tokens, _stream_ctx_win
     _stream_tokens = input_tokens
     _stream_ctx_win = context_window
-    if _live:
-        _live.update(_render_panel(border_style="green"))
 
 
 @contextmanager
 def live_response(model: str = ""):
     """
     流式响应上下文管理器。
-    用 Rich Live 在框内实时渲染，正文和脚注同步刷新。
-    整个会话复用同一个 Live 实例，减少 stop/start 切换闪烁。
+    流式阶段：sys.stdout.write 逐字输出，零 Rich 介入，emoji 不乱码。
+    流式结束：console.print 渲染一个完整 Rich Panel 包裹正文 + 脚注。
     """
-    global _live, _stream_text, _stream_model, _stream_start
-    global _stream_tokens, _stream_ctx_win
+    global _stream_text, _stream_model, _stream_start, _stream_tokens, _stream_ctx_win
     _stream_text = ""
     _stream_model = model
     _stream_start = time.time()
     _stream_tokens = 0
     _stream_ctx_win = 0
     console.print()
-
-    if _live is not None:
-        _live.stop()
-    _live = Live(_render_panel(), console=console, refresh_per_second=8, transient=True)
-    _live.start()
-
     try:
         yield
     finally:
-        if _live:
-            # 先 stop（transient=True 清除 Live 占用的屏幕区域）
-            _live.stop()
-            _live = None
-            # 再用 console.print 独立渲染最终面板，与 Live 管线完全分离
-            console.print(_render_panel(border_style="green"))
-            # 重置状态
-            _stream_model = ""
-            _stream_start = 0.0
-            _stream_tokens = 0
-            _stream_ctx_win = 0
+        # 流式结束，用 Rich 渲染一个完整面板包裹所有内容
+        elapsed = time.time() - _stream_start
+        footer_text = _build_footer(elapsed)
+        console.print(Panel(
+            Group(
+                Markdown(_stream_text or "(无输出)", code_theme="monokai"),
+                Rule(style="dim"),
+                Text(footer_text, style="dim"),
+            ),
+            border_style="green", box=box.ROUNDED,
+        ))
+        # 重置状态
+        _stream_model = ""
+        _stream_start = 0.0
+        _stream_tokens = 0
+        _stream_ctx_win = 0
 
 
 def print_assistant_text(text: str):
-    """逐字追加到流式面板（通过 Live.update 替换面板内容）"""
+    """逐字流式输出（纯 stdout，不经过 Rich）"""
     global _stream_text
+    sys.stdout.write(text)
+    sys.stdout.flush()
     _stream_text += text
-    if _live:
-        _live.update(_render_panel())
 
 
 # ─── 工具图标 ────────────────────────────────────────────
