@@ -507,7 +507,11 @@ def _execute_skill_tool(skill_name: str, args: str) -> str:
     """调用技能：解析 prompt 模板，展开为指令"""
     result = _skills_mod.execute_skill(skill_name, args)
     if not result:
+        _skills_mod.record_skill_usage(skill_name, False)
         return f"未知技能: {skill_name}。用 /skills 查看可用技能列表。"
+
+    # 记录使用（成功与否由后续对话判断，这里先记为已触发）
+    _skills_mod.record_skill_usage(skill_name, True)
 
     if result["context"] == "fork":
         # Fork 模式：创建独立子 Agent 执行，只返回最终结果

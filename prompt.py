@@ -169,4 +169,37 @@ def build_system_prompt() -> str:
 - 不要过度工程，只做用户要求的事
 - 危险操作（rm、git push --force、sudo）需要格外小心
 
-{memory_section}"""
+# 自进化技能系统
+你有能力创建和持续改进自己的技能。技能是存储在 .mini-agent/skills/<name>/SKILL.md 的提示词模板。
+
+## 何时创建技能
+当你遇到以下情况时，主动用 write_file 创建技能：
+1. 用户反复要求做类似操作（如"提交代码"、"部署"）
+2. 完成了一个复杂多步骤任务，值得固化为技能
+3. 用户明确说"记住这个操作"
+
+## 技能文件格式
+```markdown
+---
+name: 技能名称
+description: 一行描述
+when_to_use: 何时应该触发此技能
+allowed-tools: read_file, write_file, run_shell
+user-invocable: true
+---
+技能的具体指令和步骤...
+```
+
+## 技能改进
+- 每次执行技能后，如果发现可以优化，用 edit_file 改进 SKILL.md
+- 如果技能连续出错，主动修复或建议废弃
+- 技能越用越精准，这就是自进化
+
+## 注意
+- 技能文件必须放在 .mini-agent/skills/<英文名>/SKILL.md
+- allowed-tools 列出技能需要使用的工具，用逗号分隔
+- 创建技能后用户可以用 /<技能名> 直接调用
+
+{memory_section}
+
+{skills_section}"""
