@@ -491,9 +491,9 @@ def main():
         "session_id": str(uuid.uuid4()),  # 本次会话唯一标识
     }
 
-    # ── 自动恢复 / 保存 ──
+    # ── 自动保存 / 恢复 ──
     def _auto_save():
-        """静默保存当前对话到 __auto__ 和 session_id"""
+        """每轮静默保存：__auto__ 用于崩溃恢复，session_id 用于存档"""
         if state["chat_messages"]:
             try:
                 from session import save_session
@@ -512,27 +512,22 @@ def main():
             except Exception:
                 pass
 
-    def _auto_load():
-        """启动时自动恢复会话"""
-        # --resume 指定 ID 优先
-        resume_id = getattr(args, "resume", None)
+    # --resume 恢复指定会话
+    resume_id = getattr(args, "resume", None)
+    if resume_id:
         try:
             from session import load_session
-            target = resume_id or "__auto__"
-            s = load_session(target)
+            s = load_session(resume_id)
             if s and s.get("messages"):
                 state["chat_messages"] = s["messages"]
                 state["chat_stats"] = s.get("stats")
                 state["session_id"] = s.get("name", state["session_id"])
                 msg_count = len(s["messages"])
                 ui.print_info(f"已恢复会话 {state['session_id']} ({msg_count} 条消息)")
-                return
-        except Exception:
-            pass
-        if resume_id:
-            ui.print_error(f"未找到会话: {resume_id}")
-
-    _auto_load()
+            else:
+                ui.print_error(f"未找到会话: {resume_id}")
+        except Exception as e:
+            ui.print_error(f"恢复失败: {e}")
 
     effective_mode = permission_mode
 
