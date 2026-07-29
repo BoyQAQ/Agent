@@ -76,22 +76,22 @@ def live_response(model: str = ""):
     _stream_ctx_win = 0
     console.print()
 
-    if _live is not None:
-        _live.stop()
-    _live = Live(_render_panel(), console=console, refresh_per_second=8, transient=False)
-    _live.start()
+    if _live is None:
+        # 整个会话只创建一次 Live，永不 stop
+        _live = Live(_render_panel(), console=console, refresh_per_second=4, transient=False)
+        _live.start()
+    else:
+        _live.update(_render_panel())
 
     try:
         yield
     finally:
-        if _live:
-            _live.stop()
-            _live = None
-            # 重置状态
-            _stream_model = ""
-            _stream_start = 0.0
-            _stream_tokens = 0
-            _stream_ctx_win = 0
+        # 不 stop，面板永远留在屏幕，始终走 Live 刷新线程渲染（emoji 不乱码）
+        # 重置状态
+        _stream_model = ""
+        _stream_start = 0.0
+        _stream_tokens = 0
+        _stream_ctx_win = 0
 
 
 def print_assistant_text(text: str):
