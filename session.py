@@ -6,83 +6,23 @@ import time
 from pathlib import Path
 
 import pymysql
+from db import get_connection as _get_connection, ensure_table
 
-# ─── 数据库连接 ──────────────────────────────────────────
-
-DB_CONFIG_DEFAULTS = {
-    "host": "127.0.0.1",
-    "port": 3306,
-    "user": "root",
-    "password": "",
-    "database": "mini_agent",
-    "charset": "utf8mb4",
-}
-
-
-def _load_db_config() -> dict:
-    """从 ~/.mini-agent/config.json 加载数据库配置，环境变量优先"""
-    import os
-    cfg = dict(DB_CONFIG_DEFAULTS)
-    cfg["host"] = os.environ.get("MYSQL_HOST", cfg["host"])
-    cfg["port"] = int(os.environ.get("MYSQL_PORT", cfg["port"]))
-    cfg["user"] = os.environ.get("MYSQL_USER", cfg["user"])
-    cfg["password"] = os.environ.get("MYSQL_PASSWORD", cfg["password"])
-    cfg["database"] = os.environ.get("MYSQL_DATABASE", cfg["database"])
-
-    # 配置文件
-    config_file = Path.home() / ".mini-agent" / "config.json"
-    if config_file.is_file():
-        try:
-            data = json.loads(config_file.read_text(encoding="utf-8"))
-            db = data.get("mysql", {})
-            if isinstance(db, dict):
-                for k in ("host", "user", "password", "database"):
-                    if db.get(k):
-                        cfg[k] = db[k]
-                if db.get("port"):
-                    cfg["port"] = int(db["port"])
-        except Exception:
-            pass
-    return cfg
-
-
-def _get_connection():
-    """获取 MySQL 连接，自动创建数据库和表"""
-    config = _load_db_config()
-    # 先连接不指定 database，创建数据库
-    db_name = config.pop("database")
-    try:
-        conn = pymysql.connect(**config,
-            cursorclass=pymysql.cursors.DictCursor,
-            connect_timeout=5,
-        )
-    except Exception as e:
-        raise RuntimeError(f"MySQL 连接失败 ({config['host']}:{config['port']}): {e}")
-
-    with conn.cursor() as cur:
-        cur.execute(
-            f"CREATE DATABASE IF NOT EXISTS `{db_name}` "
-            f"DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-        )
-    conn.select_db(db_name)
-
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                project_hash VARCHAR(32) NOT NULL,
-                model VARCHAR(100) DEFAULT '',
-                messages JSON,
-                stats JSON,
-                saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_project (project_hash),
-                INDEX idx_name (name)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        """)
-    conn.commit()
-    return conn
+# 启动时建表
+ensure_table("sessions", """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        project_hash VARCHAR(32) NOT NULL,
+        model VARCHAR(100) DEFAULT '',
+        messages JSON,
+        stats JSON,
+        saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_project (project_hash),
+        INDEX idx_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+""")
 
 
 def _project_hash() -> str:

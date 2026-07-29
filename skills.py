@@ -1,4 +1,4 @@
-"""技能系统 — SKILL.md 模板 + 双重调用路径 + inline/fork 执行 + 自进化追踪"""
+"""技能系统 — SKILL.md 模板 + 双重调用路径 + inline/fork 执行 + 自进化追踪 + MySQL 存储"""
 
 import json
 import re
@@ -7,6 +7,51 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from memory import _parse_frontmatter
+
+# ─── MySQL 技能表 ─────────────────────────────────────────
+
+_SKILLS_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS skills (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        project_hash VARCHAR(32) NOT NULL,
+        description VARCHAR(500) DEFAULT '',
+        when_to_use TEXT,
+        allowed_tools VARCHAR(500),
+        user_invocable TINYINT(1) DEFAULT 1,
+        context VARCHAR(20) DEFAULT 'inline',
+        prompt_template MEDIUMTEXT,
+        source VARCHAR(20) DEFAULT 'project',
+        skill_dir VARCHAR(500) DEFAULT '',
+        total_uses INT DEFAULT 0,
+        success_count INT DEFAULT 0,
+        last_used TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_project (project_hash),
+        INDEX idx_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+_db_available: bool | None = None  # None = 未检测
+
+
+def _db_ok() -> bool:
+    """检测 MySQL 是否可用"""
+    global _db_available
+    if _db_available is None:
+        from db import try_connection, ensure_table
+        try:
+            ensure_table("skills", _SKILLS_TABLE_DDL)
+            _db_available = True
+        except Exception:
+            _db_available = False
+    return _db_available
+
+
+def _project_hash() -> str:
+    import hashlib
+    return hashlib.sha256(str(Path.cwd()).encode()).hexdigest()[:16]
 
 
 # ─── 数据结构 ────────────────────────────────────────────
@@ -110,7 +155,7 @@ def _load_from_dir(base: Path, source: str, skills: dict[str, SkillDefinition]):
             else:
                 allowed = [s.strip() for s in raw_tools.split(",")]
 
-        skills[name] = SkillDefinition(
+        skill = SkillDefinition(
             name=name,
             description=meta.get("description", ""),
             when_to_use=meta.get("when_to_use") or meta.get("when-to-use"),
@@ -121,6 +166,9 @@ def _load_from_dir(base: Path, source: str, skills: dict[str, SkillDefinition]):
             source=source,
             skill_dir=str(entry),
         )
+        skills[name] = skill
+        # 自动同步到 MySQL
+        sync_skill_to_db(skill)
 
 
 # ─── Prompt 解析 ─────────────────────────────────────────
@@ -191,16 +239,87 @@ def reset_skill_cache():
     _cache_mtime = 0.0
 
 
-# ─── 使用追踪（自进化数据）─────────────────────────────────
+# ─── 使用追踪（MySQL 优先，文件兜底）─────────────────────────────────
 
-def _usage_path() -> Path:
+def record_skill_usage(skill_name: str, success: bool):
+    """记录一次技能使用"""
+    if _db_ok():
+        try:
+            from db import get_connection
+            conn = get_connection()
+            try:
+                ph = _project_hash()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE skills SET total_uses = total_uses + 1, "
+                        "success_count = success_count + %s, last_used = NOW() "
+                        "WHERE name = %s AND project_hash = %s",
+                        (1 if success else 0, skill_name, ph),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return
+        except Exception:
+            pass
+    # 文件兜底
+    _fallback_record(skill_name, success)
+
+
+def _fallback_usage_path() -> Path:
     d = Path.cwd() / ".mini-agent" / "skills"
     d.mkdir(parents=True, exist_ok=True)
     return d / ".usage.json"
 
 
-def _load_usage() -> dict:
-    p = _usage_path()
+def _fallback_record(skill_name: str, success: bool):
+    p = _fallback_usage_path()
+    data = {}
+    if p.is_file():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    entry = data.get(skill_name, {"total": 0, "success": 0, "last_used": 0})
+    entry["total"] += 1
+    if success:
+        entry["success"] += 1
+    entry["last_used"] = time.time()
+    data[skill_name] = entry
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_skill_stats(skill_name: str) -> dict | None:
+    """查询单个技能的使用统计"""
+    if _db_ok():
+        try:
+            from db import get_connection
+            conn = get_connection()
+            try:
+                ph = _project_hash()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT total_uses, success_count, last_used, created_at "
+                        "FROM skills WHERE name = %s AND project_hash = %s",
+                        (skill_name, ph),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return {
+                            "total": row["total_uses"],
+                            "success": row["success_count"],
+                            "last_used": row["last_used"].timestamp() if row["last_used"] else 0,
+                        }
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    # 文件兜底
+    return _fallback_load_usage().get(skill_name)
+
+
+def _fallback_load_usage() -> dict:
+    p = _fallback_usage_path()
     if p.is_file():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
@@ -209,45 +328,34 @@ def _load_usage() -> dict:
     return {}
 
 
-def _save_usage(data: dict):
-    _usage_path().write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def record_skill_usage(skill_name: str, success: bool):
-    """记录一次技能使用（模型调用 skill 工具时自动记录）"""
-    data = _load_usage()
-    entry = data.get(skill_name, {
-        "total": 0,
-        "success": 0,
-        "last_used": 0,
-        "created": time.time(),
-    })
-    entry["total"] += 1
-    if success:
-        entry["success"] += 1
-    entry["last_used"] = time.time()
-    data[skill_name] = entry
-    _save_usage(data)
-
-
-def get_skill_stats(skill_name: str) -> dict | None:
-    """查询单个技能的使用统计"""
-    return _load_usage().get(skill_name)
-
-
 def get_stale_skills(days: int = 30, min_uses: int = 3) -> list[str]:
-    """检测可能废弃的技能：N 天未使用但曾被用过 M 次以上"""
-    data = _load_usage()
+    """检测可能废弃的技能"""
+    if _db_ok():
+        try:
+            from db import get_connection
+            conn = get_connection()
+            try:
+                ph = _project_hash()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT name FROM skills WHERE project_hash = %s "
+                        "AND total_uses >= %s AND last_used < DATE_SUB(NOW(), INTERVAL %s DAY)",
+                        (ph, min_uses, days),
+                    )
+                    return [r["name"] for r in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    # 文件兜底
+    data = _fallback_load_usage()
     cutoff = time.time() - days * 86400
-    stale = []
-    for name, entry in data.items():
-        if entry["last_used"] < cutoff and entry["total"] >= min_uses:
-            stale.append(name)
-    return stale
+    return [n for n, e in data.items()
+            if e.get("last_used", 0) < cutoff and e.get("total", 0) >= min_uses]
 
 
 def get_skill_suggestions() -> str:
-    """生成技能改进建议，注入到 system prompt"""
+    """生成技能改进建议"""
     stale = get_stale_skills()
     if not stale:
         return ""
@@ -258,3 +366,34 @@ def get_skill_suggestions() -> str:
             rate = stats["success"] / max(stats["total"], 1) * 100
             lines.append(f"- {name}: 使用 {stats['total']} 次, 成功率 {rate:.0f}%")
     return "\n".join(lines)
+
+
+def sync_skill_to_db(skill) -> None:
+    """将技能同步到 MySQL"""
+    if not _db_ok():
+        return
+    try:
+        from db import get_connection
+        conn = get_connection()
+        try:
+            ph = _project_hash()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO skills (name, project_hash, description, when_to_use, "
+                    "allowed_tools, user_invocable, context, prompt_template, source, skill_dir) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE "
+                    "description = VALUES(description), when_to_use = VALUES(when_to_use), "
+                    "allowed_tools = VALUES(allowed_tools), context = VALUES(context), "
+                    "prompt_template = VALUES(prompt_template), skill_dir = VALUES(skill_dir), "
+                    "updated_at = CURRENT_TIMESTAMP",
+                    (skill.name, ph, skill.description, skill.when_to_use or "",
+                     ",".join(skill.allowed_tools) if skill.allowed_tools else "",
+                     skill.user_invocable, skill.context, skill.prompt_template,
+                     skill.source, skill.skill_dir),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
