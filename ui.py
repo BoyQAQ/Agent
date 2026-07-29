@@ -85,13 +85,10 @@ def live_response(model: str = ""):
         yield
     finally:
         if _live:
-            # 先在 Live 下方垫空白行，确保 Live 清除后最终面板不会触底
-            # 触底时终端滚动会破坏多字节字符(emoji)的 ANSI 光标定位
-            console.print("\n\n\n\n\n")
-            # 清除 Live 面板（transient=True）
+            # 先 stop（transient=True 清除 Live 占用的屏幕区域）
             _live.stop()
             _live = None
-            # 渲染最终面板，此时下方有足够空间不会触发终端滚动
+            # 再用 console.print 独立渲染最终面板，与 Live 管线完全分离
             console.print(_render_panel(border_style="green"))
             # 重置状态
             _stream_model = ""
