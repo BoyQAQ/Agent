@@ -99,6 +99,20 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_db",
+            "description": "查询本地 MySQL 数据库。可查看历史会话(/sessions)、技能统计(/skills使用次数)等。仅支持 SELECT 只读查询。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "SELECT 查询语句。可用表: sessions(对话历史), skills(技能列表及使用统计)"},
+                },
+                "required": ["sql"],
+            },
+        },
+    },
     # Plan Mode（deferred）
     {
         "type": "function",
@@ -365,6 +379,44 @@ def execute_tool(name: str, args: dict) -> str:
             indent=2, ensure_ascii=False,
         )
 
+    elif name == "query_db":
+        sql = args.get("sql", "").strip()
+        if not sql:
+            return "错误: 请提供 SQL 查询语句"
+        sql_upper = sql.upper().strip()
+        if not sql_upper.startswith("SELECT"):
+            return "错误: 仅允许 SELECT 只读查询"
+        if any(kw in sql_upper for kw in ("DROP", "DELETE", "INSERT", "UPDATE",
+                                            "ALTER", "CREATE", "TRUNCATE", "EXEC")):
+            return "错误: 查询中包含禁止的关键字"
+        try:
+            from db import get_connection
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                    if not rows:
+                        return "(查询结果为空)"
+                    if len(rows) > 50:
+                        rows = rows[:50]
+                        truncated = True
+                    else:
+                        truncated = False
+                    cols = list(rows[0].keys())
+                    lines = [" | ".join(cols), "-" * len(" | ".join(cols))]
+                    for r in rows:
+                        vals = [str(r[c])[:100] if r[c] is not None else "NULL" for c in cols]
+                        lines.append(" | ".join(vals))
+                    result = "\n".join(lines)
+                    if truncated:
+                        result += f"\n\n(已截断，共 {len(rows)} 行)"
+                    return result
+            finally:
+                conn.close()
+        except Exception as e:
+            return f"数据库查询失败: {e}"
+
     elif name == "list_files":
         try:
             p = Path(args.get("path") or ".")
@@ -418,7 +470,7 @@ DANGEROUS_PATTERNS = [
     re.compile(r"\bdd\s+if="),
 ]
 
-READ_TOOLS = {"read_file", "list_files", "grep_search"}
+READ_TOOLS = {"read_file", "list_files", "grep_search", "query_db"}
 EDIT_TOOLS = {"write_file", "edit_file"}
 
 
