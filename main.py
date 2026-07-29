@@ -7,6 +7,7 @@ import sys
 import uuid
 import urllib.request
 import urllib.error
+from pathlib import Path
 import ui
 from agent import run, resolve_api_config, save_api_config, get_context_window
 from memory import list_memories, get_memory_dir
@@ -211,6 +212,7 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
   /sessions    列出已保存的对话
   /memory      查看记忆列表
   /skills      查看技能列表
+  /skill-install <URL>  安装社区技能
   /cd <路径>    切换工作目录
   /context     查看上下文窗口用量
   /mcp         开关 MCP 外部工具
@@ -332,6 +334,40 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
         except Exception as e:
             ui.print_error(f"查询失败: {e}")
         return HANDLED
+
+    # ── /skill-install ──
+    if cmd == "/skill-install":
+        if not arg:
+            ui.print_info("Usage: /skill-install <URL or gh:user/repo>")
+            ui.print_info("Example: /skill-install gh:someone/skill-name")
+            return HANDLED
+        try:
+            url = arg
+            if arg.startswith("gh:"):
+                url = "https://raw.githubusercontent.com/" + arg[3:] + "/main/SKILL.md"
+            elif not arg.startswith("http"):
+                url = "https://raw.githubusercontent.com/" + arg + "/main/SKILL.md"
+            req = urllib.request.Request(url, headers={"User-Agent": "mini-agent"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8")
+            from memory import _parse_frontmatter
+            meta, _ = _parse_frontmatter(raw)
+            name = meta.get("name") or url.rstrip("/").split("/")[-1].replace(".md", "")
+            if not name:
+                ui.print_error("cannot determine skill name")
+                return HANDLED
+            d = Path.cwd() / ".mini-agent" / "skills" / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(raw, encoding="utf-8")
+            from skills import reset_skill_cache
+            reset_skill_cache()
+            ui.print_info("Skill installed: /" + name)
+        except urllib.error.HTTPError as e:
+            ui.print_error("HTTP " + str(e.code))
+        except Exception as e:
+            ui.print_error("install failed: " + str(e))
+        return HANDLED
+
 
     # ── /model ──
     if cmd == "/model":
