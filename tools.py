@@ -1,5 +1,6 @@
 """工具定义 + 执行 + 权限检查 + 错误重试"""
 
+import difflib
 import fnmatch
 import glob
 import json
@@ -307,10 +308,23 @@ def execute_tool(name: str, args: dict) -> str:
             )
 
         try:
+            old_content = content
             new_content = content.replace(old, new)
             p.write_text(new_content, encoding="utf-8")
             times = count if replace_all else 1
-            return f"成功编辑 {args['file_path']}（替换了 {times} 处，{len(new_content)} 字符）"
+
+            # 生成 unified diff
+            diff_lines = list(difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                new_content.splitlines(keepends=True),
+                fromfile=f"a/{args['file_path']}",
+                tofile=f"b/{args['file_path']}",
+            ))
+            diff_text = "".join(diff_lines) if diff_lines else "(无变更)"
+            return (
+                f"成功编辑 {args['file_path']}（替换了 {times} 处，{len(new_content)} 字符）\n"
+                f"\n[DEF]\n{diff_text}\n[/DEF]"
+            )
         except Exception as e:
             return f"错误: {e}"
     elif name == "run_shell":

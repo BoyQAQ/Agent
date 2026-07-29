@@ -141,11 +141,36 @@ def print_tool_call(name: str, args: dict):
     console.print(f"  {icon} [bold blue]{name}[/bold blue] [dim]{summary}[/dim]")
 
 
+def print_tool_diff(diff_text: str):
+    """彩色渲染 unified diff"""
+    for line in diff_text.split("\n"):
+        if line.startswith("+++") or line.startswith("---"):
+            console.print(f"  [bold]{line}[/bold]")
+        elif line.startswith("@@"):
+            console.print(f"  [cyan]{line}[/cyan]")
+        elif line.startswith("+"):
+            console.print(f"  [green]{line}[/green]")
+        elif line.startswith("-"):
+            console.print(f"  [red]{line}[/red]")
+        else:
+            console.print(f"  [dim]{line}[/dim]")
+
+
 def print_tool_result(result: str):
-    """紧凑打印工具返回结果"""
+    """紧凑打印工具返回结果，自动识别 diff 标记"""
     if not result:
         return
-    # 截断显示
+    # 检查是否包含 diff 标记
+    if "[DEF]" in result and "[/DEF]" in result:
+        before = result.split("[DEF]")[0].strip()
+        diff = result.split("[DEF]")[1].split("[/DEF]")[0].strip()
+        if before:
+            short = before.replace("\n", " ")[:100]
+            console.print(f"    [dim]→ {short}[/dim]")
+        if diff:
+            print_tool_diff(diff)
+        return
+    # 普通结果，截断显示
     short = result.replace("\n", " ")[:100]
     if len(result) > 100:
         short += f" ... ({len(result)} 字符)"
