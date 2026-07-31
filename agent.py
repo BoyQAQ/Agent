@@ -503,30 +503,46 @@ def _sub_call(client: OpenAI, model: str, tools: list[dict],
 
 # ─── 技能执行 ────────────────────────────────────────────
 
-def _execute_skill_tool(skill_name: str, args: str) -> str:
-    """调用技能：解析 prompt 模板，展开为指令"""
+def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> str:
+    """调用技能：解析 prompt 模板，展开为指令。
+    Fork 模式：创建独立子 Agent 执行，只返回最终结果。"""
     result = _skills_mod.execute_skill(skill_name, args)
     if not result:
         _skills_mod.record_skill_usage(skill_name, False)
         return f"未知技能: {skill_name}。用 /skills 查看可用技能列表。"
 
-    # 记录使用（成功与否由后续对话判断，这里先记为已触发）
     _skills_mod.record_skill_usage(skill_name, True)
 
     if result["context"] == "fork":
-        # Fork 模式：创建独立子 Agent 执行，只返回最终结果
         ui.console.print(f"\n  [bold blue]🔀 Skill fork: {skill_name}[/bold blue]")
-        config = {
-            "system_prompt": result["prompt"],
-            "tools": (
-                [t for t in TOOLS if t["function"]["name"] in result["allowed_tools"]]
-                if result["allowed_tools"]
-                else [t for t in TOOLS if t["function"]["name"] != "agent"]
-            ),
-        }
-        # 简化：直接返回 prompt，让模型在当前上下文执行
-        # 完整的 fork 实现应创建独立 Agent 实例
-        return f'[技能 "{skill_name}" 已激活 (fork)]\n\n{result["prompt"]}'
+        allowed = set(result["allowed_tools"]) if result["allowed_tools"] else None
+        if allowed:
+            sub_tools = [t for t in TOOLS if t["function"]["name"] in allowed]
+        else:
+            sub_tools = [t for t in TOOLS if t["function"]["name"] != "agent"]
+
+        if client is None:
+            return f'[技能 "{skill_name}" 已激活 (fork - 无独立上下文)]\n\n{result["prompt"]}'
+
+        sub_messages = [
+            {"role": "system", "content": result["prompt"]},
+            {"role": "user", "content": args or "请执行此技能的任务。"},
+        ]
+
+        for _ in range(10):
+            resp = _sub_call(client, model, sub_tools, sub_messages)
+            sub_messages.append(resp)
+            tcs = resp.get("tool_calls")
+            if not tcs:
+                ui.console.print("  [dim]✓ Fork skill 完成[/dim]")
+                return resp.get("content") or "(Fork skill 无输出)"
+            for tc in tcs:
+                fn = tc["function"]
+                t_args = json.loads(fn["arguments"])
+                t_result = execute_tool(fn["name"], t_args)
+                sub_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": t_result})
+
+        return "(Fork skill 达到最大轮次)"
 
     # Inline 模式：展开 prompt，注入对话
     return f'[技能 "{skill_name}" 已激活]\n\n{result["prompt"]}'
@@ -691,7 +707,8 @@ def run(user_message: str, permission_mode: str = "default",
             # ── skill 工具：调用技能 ──
             if name == "skill":
                 result = _execute_skill_tool(args.get("skill_name", ""),
-                                              args.get("args", ""))
+                                              args.get("args", ""),
+                                              client=client, model=model)
                 ui.print_tool_call("skill", {
                     "name": args.get("skill_name", ""),
                     "args": args.get("args", ""),
