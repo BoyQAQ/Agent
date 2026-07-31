@@ -30,12 +30,15 @@ _EXTENSIONS = {".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp",
 
 def _tokenize(text: str) -> list[str]:
     """分词：拆分驼峰、下划线和运算符"""
-    # 先按 snake_case 和 camelCase 拆分
+    # 先按下划线和连字符拆开（web_fetch → web fetch）
+    text = text.replace("_", " ").replace("-", " ")
+    # 按驼峰拆分
     text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
     text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', text)
     # 提取字母数字序列（至少2个字符）
-    tokens = re.findall(r'[a-zA-Z_]\w+', text.lower())
-    return [t for t in tokens if len(t) >= 2]
+    tokens = re.findall(r'[a-zA-Z]\w*', text.lower())
+    # 过滤极短和纯数字
+    return [t for t in tokens if len(t) >= 2 and not t.isdigit()]
 
 
 def _chunk_file(file_path: Path) -> list[dict]:
@@ -100,6 +103,18 @@ class CodeIndex:
         root = Path(root_dir) if root_dir else Path.cwd()
         self.chunks = []
         self.doc_tokens = []
+
+        # 先把工具定义加入索引（方便"有哪些工具"类查询）
+        try:
+            from tools import TOOLS
+            tools_text = ""
+            for t in TOOLS:
+                fn = t["function"]
+                tools_text += f"Tool: {fn['name']}\nDesc: {fn.get('description','')}\n\n"
+            self.chunks.append({"file": "tools.py", "start": 0, "end": 0, "text": tools_text})
+            self.doc_tokens.append(_tokenize(tools_text))
+        except Exception:
+            pass
 
         for f in root.rglob("*"):
             if not f.is_file():
@@ -266,9 +281,16 @@ def search(query: str, top_k: int = TOP_K) -> list[dict]:
 def rag_context(query: str, max_chars: int = 3000) -> str:
     """
     根据用户查询检索相关代码，返回格式化的上下文文本。
-    直接注入 system prompt。
+    直接注入 system prompt。中英文混合查询自动回退。
     """
     results = search(query, top_k=TOP_K)
+
+    # 无结果时，尝试只提取英文/数字部分再搜（中文查询匹配英文代码）
+    if not results:
+        en_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', query)
+        if en_words:
+            results = search(" ".join(en_words), top_k=TOP_K)
+
     if not results:
         return ""
 
