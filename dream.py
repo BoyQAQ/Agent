@@ -1,5 +1,6 @@
 """Dreaming - idle-time reflection, extract patterns, improve skills"""
 
+import json
 import time
 import threading
 
@@ -10,15 +11,16 @@ DREAM_PROMPT = """You are the Agent's "dream reflection" module. The user is awa
 - write_file: create new skills from discovered patterns
 - edit_file: improve existing skills
 - query_db: query sessions and skills tables for data
+- list_files: see what skills exist
+- web_fetch: check online docs if needed
 
 ## What to do
-1. Query the sessions table for recent conversations
-2. Check skill usage stats from the skills table
-3. Look for:
+1. Query the sessions and skills tables for recent data
+2. Look for:
    a. Repeated operations -> create a new Skill
    b. Low-success skills -> improve them
    c. Long-unused skills -> suggest deprecation
-4. Output a brief summary
+3. Output a brief summary of what you changed or decided
 
 ## Rules
 - NO destructive operations (rm, force push, etc)
@@ -29,6 +31,8 @@ DREAM_PROMPT = """You are the Agent's "dream reflection" module. The user is awa
 
 
 class Dreamer:
+    """Background dream thread with real tool execution"""
+
     def __init__(self, idle_seconds=60, check_interval=15):
         self._idle_seconds = idle_seconds
         self._check_interval = check_interval
@@ -76,56 +80,53 @@ class Dreamer:
         try:
             from openai import OpenAI
             from agent import resolve_api_config
+            from tools import TOOLS, execute_tool
 
             cfg = resolve_api_config()
             if not cfg["api_key"]:
                 return
             client = OpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
 
-            session_info = ""
-            try:
-                from db import get_connection
-                import hashlib
-                from pathlib import Path
-                ph = hashlib.sha256(str(Path.cwd()).encode()).hexdigest()[:16]
-                conn = get_connection()
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT name, saved_at FROM sessions WHERE project_hash=%s ORDER BY updated_at DESC LIMIT 3",
-                            (ph,),
-                        )
-                        for r in cur.fetchall():
-                            session_info += f"  {r['name']} ({r['saved_at']})\n"
-                finally:
-                    conn.close()
-            except Exception:
-                pass
+            dream_tools = [t for t in TOOLS if t["function"]["name"] in {
+                "query_db", "read_file", "list_files", "grep_search",
+                "write_file", "edit_file", "web_fetch",
+            }]
 
-            skills_info = ""
-            try:
-                from skills import discover_skills, get_skill_stats
-                for s in discover_skills():
-                    st = get_skill_stats(s.name)
-                    if st:
-                        skills_info += f"  {s.name}: {st['total']} uses, {st['success']}/{st['total']} ok\n"
-                    else:
-                        skills_info += f"  {s.name}: never used\n"
-            except Exception:
-                pass
+            messages = [
+                {"role": "system", "content": DREAM_PROMPT},
+                {"role": "user", "content": f"Time: {time.strftime('%Y-%m-%d %H:%M')}\n\nQuery the database, review skills and sessions. Improve if needed."},
+            ]
 
-            msg = f"Time: {time.strftime('%Y-%m-%d %H:%M')}\n\nRecent sessions:\n{session_info or '(none)'}\n\nSkills:\n{skills_info or '(none)'}\n\nReview and decide if anything needs improvement."
+            summary = ""
+            for _ in range(5):
+                resp = client.chat.completions.create(
+                    model=cfg["model"],
+                    messages=messages,
+                    tools=dream_tools,
+                )
+                am = resp.choices[0].message
+                tcs = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in (am.tool_calls or [])
+                ] if am.tool_calls else None
+                messages.append({"role": "assistant", "content": am.content, "tool_calls": tcs})
 
-            resp = client.chat.completions.create(
-                model=cfg["model"],
-                messages=[
-                    {"role": "system", "content": DREAM_PROMPT},
-                    {"role": "user", "content": msg},
-                ],
-            )
-            content = resp.choices[0].message.content or ""
-            if content and "nothing to improve" not in content.lower():
-                self._dream_result = content
+                if am.content:
+                    summary = am.content
+                if not am.tool_calls:
+                    break
+
+                for tc in am.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except Exception:
+                        args = {}
+                    result = execute_tool(tc.function.name, args)
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": str(result)[:3000]})
+
+            if summary and "nothing to improve" not in summary.lower():
+                self._dream_result = summary
                 self._last_activity = time.time()
         except Exception:
             pass
