@@ -585,13 +585,23 @@ def run(user_message: str, permission_mode: str = "default",
         except Exception:
             pass
 
+    # ── RAG: 检索相关代码 ──
+    rag_ctx = ""
+    try:
+        from rag import rag_context
+        rag_ctx = rag_context(user_message)
+    except Exception:
+        pass
+
     # 如果传入了历史，延续对话；否则创建新对话
     if messages is not None:
-        messages.append({"role": "user", "content": user_message})
+        augmented = f"{rag_ctx}\n\n{user_message}" if rag_ctx else user_message
+        messages.append({"role": "user", "content": augmented})
     else:
+        augmented = f"{rag_ctx}\n\n{user_message}" if rag_ctx else user_message
         messages = [
             {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": user_message},
+            {"role": "user", "content": augmented},
         ]
 
         # 仅新会话时注入 plan mode 提示词
