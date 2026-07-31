@@ -113,6 +113,20 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "Fetch a web page as plain text. Use to read online docs, articles, API references.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch (must start with http:// or https://)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
     # Plan Mode（deferred）
     {
         "type": "function",
@@ -417,6 +431,33 @@ def execute_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"数据库查询失败: {e}"
 
+    elif name == "web_fetch":
+        url = args.get("url", "")
+        if not url:
+            return "Error: please provide a URL"
+        if not url.startswith(("http://", "https://")):
+            return "Error: URL must start with http:// or https://"
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "mini-agent/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                raw = resp.read()
+                charset = "utf-8"
+                if "charset=" in ct:
+                    charset = ct.split("charset=")[-1].split(";")[0].strip()
+                text = raw.decode(charset, errors="replace")
+                import re as _re
+                text = _re.sub(r"<script[^>]*>.*?</script>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                text = _re.sub(r"<style[^>]*>.*?</style>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+                text = _re.sub(r"<[^>]+>", " ", text)
+                text = _re.sub(r"\s+", " ", text)
+                return text.strip()[:6000] or "(empty page)"
+        except urllib.error.HTTPError as e:
+            return f"HTTP {e.code}: {e.reason}"
+        except Exception as e:
+            return f"Fetch failed: {e}"
+
     elif name == "list_files":
         try:
             p = Path(args.get("path") or ".")
@@ -470,7 +511,7 @@ DANGEROUS_PATTERNS = [
     re.compile(r"\bdd\s+if="),
 ]
 
-READ_TOOLS = {"read_file", "list_files", "grep_search", "query_db"}
+READ_TOOLS = {"read_file", "list_files", "grep_search", "query_db", "web_fetch"}
 EDIT_TOOLS = {"write_file", "edit_file"}
 
 

@@ -4,7 +4,7 @@ from tools import TOOLS
 
 # ─── 只读工具集 ──────────────────────────────────────────
 
-READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search", "tool_search", "query_db"}
+READ_ONLY_TOOLS = {"read_file", "list_files", "grep_search", "tool_search", "query_db", "web_search", "web_fetch"}
 
 
 def _get_read_only_tools() -> list[dict]:
