@@ -9,6 +9,11 @@ from pathlib import Path
 from openai import OpenAI
 
 from tools import TOOLS, execute_tool, check_permission, is_retryable, get_active_tools
+from harness import execute_with_retry as _exec
+
+def _exec_tool(name, args):
+    """带 harness 的工具执行（重试+纠错+熔断）"""
+    return _exec(name, args, execute_tool)
 from prompt import build_system_prompt
 from memory import (
     start_memory_prefetch, format_memories_for_injection,
@@ -470,7 +475,7 @@ def _execute_agent_tool(args: dict, client: OpenAI, model: str,
             fn = tc["function"]
             t_name = fn["name"]
             t_args = json.loads(fn["arguments"])
-            t_result = execute_tool(t_name, t_args)
+            t_result = _exec_tool(t_name, t_args)
             sub_messages.append({
                 "role": "tool", "tool_call_id": tc["id"],
                 "content": t_result,
@@ -539,7 +544,7 @@ def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> st
             for tc in tcs:
                 fn = tc["function"]
                 t_args = json.loads(fn["arguments"])
-                t_result = execute_tool(fn["name"], t_args)
+                t_result = _exec_tool(fn["name"], t_args)
                 sub_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": t_result})
 
         return "(Fork skill 达到最大轮次)"
@@ -842,7 +847,7 @@ def run(user_message: str, permission_mode: str = "default",
             elif perm["action"] == "confirm":
                 confirm_key = f"{name}:{perm.get('message', '')}"
                 if confirm_key in _session_allowlist:
-                    result = execute_tool(name, args)
+                    result = _exec_tool(name, args)
                     ui.print_tool_call(name, args)
                     ui.print_tool_result(result)
                 else:
@@ -857,15 +862,15 @@ def run(user_message: str, permission_mode: str = "default",
                     if answer == "a":
                         _session_allowlist.add(confirm_key)
                         ui.print_info("已加入会话白名单")
-                        result = execute_tool(name, args)
+                        result = _exec_tool(name, args)
                     elif answer.startswith("y"):
-                        result = execute_tool(name, args)
+                        result = _exec_tool(name, args)
                     else:
                         result = "❌ 用户拒绝了此操作"
                     ui.print_tool_call(name, args)
                 ui.print_tool_result(result)
             else:
-                result = execute_tool(name, args)
+                result = _exec_tool(name, args)
                 ui.print_tool_call(name, args)
                 ui.print_tool_result(result)
 

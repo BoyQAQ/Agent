@@ -400,6 +400,18 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
             ui.print_error(f"RAG 失败: {e}")
         return HANDLED
 
+    # ── /harness ──
+    if cmd == "/harness":
+        try:
+            from harness import metrics
+            s = metrics.summary()
+            ui.print_info("工具执行指标:")
+            for line in s.split("\n"):
+                print(f"  {line}")
+        except Exception as e:
+            ui.print_error(f"查询失败: {e}")
+        return HANDLED
+
     # ── /model ──
     if cmd == "/model":
         result = model_picker(
