@@ -214,6 +214,7 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
   /skills      查看技能列表
   /skill-install <URL>  安装社区技能
   /cd <路径>    切换工作目录
+  /rag <查询>    搜索相关代码
   /context     查看上下文窗口用量
   /mcp         开关 MCP 外部工具
   /<技能名>    调用技能（如 /commit fix bug）
@@ -368,6 +369,34 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
             ui.print_error("install failed: " + str(e))
         return HANDLED
 
+
+    # ── /rag ──
+    if cmd == "/rag":
+        if arg == "--rebuild":
+            try:
+                from rag import get_index
+                n = get_index(force_rebuild=True).chunks if hasattr(get_index(force_rebuild=True), '__iter__') else get_index(force_rebuild=True)
+                ui.print_info("RAG 索引已重建")
+            except Exception as e:
+                ui.print_error(f"重建失败: {e}")
+            return HANDLED
+        if not arg:
+            ui.print_info("用法: /rag <查询> | /rag --rebuild")
+            return HANDLED
+        try:
+            from rag import search
+            results = search(arg, top_k=5)
+            if not results:
+                ui.print_info("未找到相关代码")
+            else:
+                ui.print_info(f"找到 {len(results)} 个代码块:")
+                for r in results:
+                    preview = r['text'][:120].replace('\n', ' ')
+                    print(f"  {r['file']}:{r['start']}-{r['end']} ({r['score']})")
+                    print(f"  [dim]{preview}...[/dim]\n")
+        except Exception as e:
+            ui.print_error(f"RAG 失败: {e}")
+        return HANDLED
 
     # ── /model ──
     if cmd == "/model":

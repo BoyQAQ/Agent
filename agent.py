@@ -588,8 +588,12 @@ def run(user_message: str, permission_mode: str = "default",
     # ── RAG: 检索相关代码 ──
     rag_ctx = ""
     try:
-        from rag import rag_context
+        from rag import rag_context, search
         rag_ctx = rag_context(user_message)
+        if rag_ctx:
+            # 统计检索到的块数（按文件路径分隔符计算）
+            chunk_count = rag_ctx.count("L") - rag_ctx.count("LL")  # 粗略计数
+            ui.print_info(f"RAG 检索到相关代码块，已注入上下文")
     except Exception:
         pass
 
