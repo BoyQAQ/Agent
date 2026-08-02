@@ -412,6 +412,26 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
             ui.print_error(f"查询失败: {e}")
         return HANDLED
 
+    # ── /skill-ok /skill-fail ──
+    if cmd in ("/skill-ok", "/skill-fail"):
+        success = (cmd == "/skill-ok")
+        try:
+            from agent import mark_last_skill, get_last_skill
+            name, is_inline = get_last_skill()
+            if not name:
+                ui.print_info("没有最近使用的技能")
+            else:
+                if arg:
+                    mark_last_skill(success)
+                    tag = "✅" if success else "❌"
+                    ui.print_info(f"{tag} 已标记 /{name}")
+                else:
+                    tag = "inline" if is_inline else "fork"
+                    ui.print_info(f"最近技能: /{name} ({tag}) — 用 /skill-ok 或 /skill-fail 标记成败")
+        except Exception as e:
+            ui.print_error(f"操作失败: {e}")
+        return HANDLED
+
     # ── /skill-history ──
     if cmd == "/skill-history":
         if not arg:

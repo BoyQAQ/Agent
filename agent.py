@@ -508,14 +508,35 @@ def _sub_call(client: OpenAI, model: str, tools: list[dict],
 
 # ─── 技能执行 ────────────────────────────────────────────
 
+def get_last_skill() -> tuple[str, bool]:
+    """返回 (skill_name, is_inline) 供手动纠正"""
+    return _last_skill_called, _last_skill_is_inline
+
+
+def mark_last_skill(success: bool):
+    """手动纠正最近一个 skill 的成败"""
+    global _last_skill_called
+    if _last_skill_called:
+        _skills_mod.record_skill_usage(_last_skill_called, success)
+        _last_skill_called = ""
+        return _last_skill_called
+    return ""
+
+
 def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> str:
     """调用技能：解析 prompt 模板，展开为指令。
     Fork 模式：创建独立子 Agent 执行，只返回最终结果。
     成功判定：返回内容不含错误关键词。"""
+    global _last_skill_called, _last_skill_is_inline
     result = _skills_mod.execute_skill(skill_name, args)
     if not result:
+        _last_skill_called = skill_name
+        _last_skill_is_inline = False
         _skills_mod.record_skill_usage(skill_name, False)
         return f"未知技能: {skill_name}。用 /skills 查看可用技能列表。"
+
+    _last_skill_called = skill_name
+    _last_skill_is_inline = (result["context"] != "fork")
 
     if result["context"] == "fork":
         ui.console.print(f"\n  [bold blue]🔀 Skill fork: {skill_name}[/bold blue]")
@@ -571,6 +592,10 @@ def _is_skill_failure(text: str) -> bool:
 
 # 会话级权限白名单
 _session_allowlist: set[str] = set()
+
+# 最近使用的 skill（用于手动 success/fail 纠正）
+_last_skill_called: str = ""
+_last_skill_is_inline: bool = False
 
 def run(user_message: str, permission_mode: str = "default",
         *, api_config: dict | None = None,
