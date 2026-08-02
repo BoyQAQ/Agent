@@ -510,13 +510,12 @@ def _sub_call(client: OpenAI, model: str, tools: list[dict],
 
 def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> str:
     """调用技能：解析 prompt 模板，展开为指令。
-    Fork 模式：创建独立子 Agent 执行，只返回最终结果。"""
+    Fork 模式：创建独立子 Agent 执行，只返回最终结果。
+    成功判定：返回内容不含错误关键词。"""
     result = _skills_mod.execute_skill(skill_name, args)
     if not result:
         _skills_mod.record_skill_usage(skill_name, False)
         return f"未知技能: {skill_name}。用 /skills 查看可用技能列表。"
-
-    _skills_mod.record_skill_usage(skill_name, True)
 
     if result["context"] == "fork":
         ui.console.print(f"\n  [bold blue]🔀 Skill fork: {skill_name}[/bold blue]")
@@ -527,6 +526,7 @@ def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> st
             sub_tools = [t for t in TOOLS if t["function"]["name"] != "agent"]
 
         if client is None:
+            _skills_mod.record_skill_usage(skill_name, False)
             return f'[技能 "{skill_name}" 已激活 (fork - 无独立上下文)]\n\n{result["prompt"]}'
 
         sub_messages = [
@@ -540,17 +540,31 @@ def _execute_skill_tool(skill_name: str, args: str, client=None, model="") -> st
             tcs = resp.get("tool_calls")
             if not tcs:
                 ui.console.print("  [dim]✓ Fork skill 完成[/dim]")
-                return resp.get("content") or "(Fork skill 无输出)"
+                output = resp.get("content") or "(Fork skill 无输出)"
+                _skills_mod.record_skill_usage(skill_name, not _is_skill_failure(output))
+                return output
             for tc in tcs:
                 fn = tc["function"]
                 t_args = json.loads(fn["arguments"])
                 t_result = _exec_tool(fn["name"], t_args)
                 sub_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": t_result})
 
-        return "(Fork skill 达到最大轮次)"
+        output = "(Fork skill 达到最大轮次)"
+        _skills_mod.record_skill_usage(skill_name, False)
+        return output
 
-    # Inline 模式：展开 prompt，注入对话
+    # Inline 模式：不判断成败（结果混在对话中，下一轮才知道）
+    _skills_mod.record_skill_usage(skill_name, True)
     return f'[技能 "{skill_name}" 已激活]\n\n{result["prompt"]}'
+
+
+def _is_skill_failure(text: str) -> bool:
+    """启发式判断：skill 输出是否表示失败"""
+    fail_markers = [
+        "达到最大轮次", "Fork skill 无输出", "无独立上下文",
+        "Error:", "错误:", "失败", "failed",
+    ]
+    return any(m in text for m in fail_markers)
 
 
 # ─── Agent 主循环 ────────────────────────────────────────
