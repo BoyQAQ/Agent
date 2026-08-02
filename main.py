@@ -167,6 +167,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cwd", default=None, help="切换工作目录")
     parser.add_argument("--no-mcp", action="store_true", default=False,
                         help="禁用 MCP 外部工具（默认已禁用）")
+    parser.add_argument("--dangerously-bypass-sandbox", action="store_true",
+                        default=False, help="绕过文件系统沙箱（允许写任意路径）")
     parser.add_argument("--resume", default=None,
                         help="恢复指定会话 ID")
 
@@ -530,6 +532,12 @@ def main():
         api_base=args.api_base,
         model=args.model,
     )
+
+    # 沙箱绕过
+    if args.dangerously_bypass_sandbox:
+        from tools import enable_sandbox_bypass
+        enable_sandbox_bypass()
+        print("⚠ 沙箱已绕过 — 允许写任意路径")
 
     # MCP 默认关闭，通过 REPL 中 /mcp 手动开启
     enable_mcp = False

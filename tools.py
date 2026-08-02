@@ -228,6 +228,9 @@ def activate_deferred(query: str) -> list[dict] | None:
 BLOCKED_PATHS = ["/etc", "/boot", "/sys", "/proc", "/dev",
                  "C:\\Windows", "C:\\System32", "/Windows", "/System32"]
 
+# 白名单目录 — 允许写（相对于项目根）
+_ALLOWED_WRITE_DIRS = {".mini-agent", ".git", ".github"}
+
 # 网络相关命令（沙箱下全部拦截，防止数据外泄）
 NETWORK_COMMANDS = {"curl", "wget", "nc", "netcat", "telnet", "ftp",
                     "ssh", "scp", "rsync", "nslookup", "dig", "ping"}
@@ -235,6 +238,58 @@ NETWORK_COMMANDS = {"curl", "wget", "nc", "netcat", "telnet", "ftp",
 # 输出重定向到文件 — 拦截 >
 REDIRECT_PATTERN = re.compile(r"\|\s*(curl|wget|nc|bash|sh|python|node)\b"
                               r"|\bcurl\b|\bwget\b")
+
+# 全局沙箱开关（--dangerously-bypass-sandbox 设置为 True）
+_bypass_sandbox: bool = False
+
+
+def enable_sandbox_bypass():
+    global _bypass_sandbox
+    _bypass_sandbox = True
+
+
+def _sandbox_file_path(file_path: str) -> str | None:
+    """检查文件路径是否允许写入。通过返回 None，拒绝返回原因字符串。"""
+    if _bypass_sandbox:
+        return None
+
+    from pathlib import Path
+    try:
+        target = Path(file_path).resolve()
+    except Exception:
+        return f"无法解析路径: {file_path}"
+
+    # 1. 系统路径黑名单 — 坚决拦截
+    target_str = str(target).replace("\\", "/")
+    for blocked in BLOCKED_PATHS:
+        if blocked.replace("\\", "/").lower() in target_str.lower():
+            return f"沙箱禁止访问系统路径: {blocked}"
+
+    # 2. 项目根目录 — 允许
+    project_root = Path.cwd().resolve()
+    try:
+        target.relative_to(project_root)
+        return None  # 在项目内，放行
+    except ValueError:
+        pass
+
+    # 3. ~/.mini-agent — 允许（技能/配置/会话）
+    home_dot = Path.home().resolve() / ".mini-agent"
+    try:
+        target.relative_to(home_dot)
+        return None
+    except ValueError:
+        pass
+
+    # 4. 临时目录 — 允许（但不建议）
+    tmp = Path("/tmp" if not str(project_root).startswith("/mnt") else "/tmp")
+    try:
+        target.relative_to(tmp.resolve())
+        return None
+    except ValueError:
+        pass
+
+    return f"沙箱禁止向项目外路径写入: {target}"
 
 
 def _sandbox_command(cmd: str) -> str | None:
@@ -289,6 +344,10 @@ def execute_tool(name: str, args: dict) -> str:
             return f"错误: {e}"
 
     elif name == "write_file":
+        # 沙箱检查
+        rejection = _sandbox_file_path(args.get("file_path", ""))
+        if rejection:
+            return f"🛡 沙箱拦截: {rejection}"
         try:
             p = Path(args["file_path"])
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -297,6 +356,10 @@ def execute_tool(name: str, args: dict) -> str:
         except Exception as e:
             return f"错误: {e}"
     elif name == "edit_file":
+        # 沙箱检查
+        rejection = _sandbox_file_path(args.get("file_path", ""))
+        if rejection:
+            return f"🛡 沙箱拦截: {rejection}"
         try:
             p = Path(args["file_path"])
             if not p.is_file():
