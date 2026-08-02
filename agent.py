@@ -700,6 +700,80 @@ def run(user_message: str, permission_mode: str = "default",
             session = time.time() - stats.get("session_start", time.time())
             return messages, stats
 
+        # ── 并行执行判断 ──
+        _PARALLEL_SAFE = {"read_file", "list_files", "grep_search", "query_db",
+                          "web_search", "web_fetch", "tool_search"}
+        _EDIT_TOOLS = {"write_file", "edit_file"}
+
+        def _can_run_parallel(tcs):
+            """检查工具调用是否可以并行执行"""
+            files_touched = set()
+            has_sequential = False
+            for tc in tcs:
+                name = tc["function"]["name"]
+                if name in ("enter_plan_mode", "exit_plan_mode", "skill", "agent",
+                           "run_shell") or name.startswith("mcp__"):
+                    has_sequential = True
+                    break
+                if name in _EDIT_TOOLS:
+                    try:
+                        fp = json.loads(tc["function"]["arguments"]).get("file_path", "")
+                    except Exception:
+                        fp = ""
+                    if fp in files_touched:
+                        has_sequential = True  # 同文件并发写不安全
+                        break
+                    files_touched.add(fp)
+                # 权限确认不能并行
+                try:
+                    a = json.loads(tc["function"]["arguments"])
+                except Exception:
+                    a = {}
+                perm = check_permission(name, a, permission_mode, _plan_file_path)
+                if perm["action"] == "confirm":
+                    has_sequential = True
+                    break
+            return not has_sequential and len(tcs) > 1
+
+        if _can_run_parallel(tool_calls):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            ui.print_info(f"[parallel] 并行执行 {len(tool_calls)} 个工具")
+            results_by_id = {}
+            # 提交所有任务
+            with ThreadPoolExecutor(max_workers=min(len(tool_calls), 8)) as pool:
+                futures = {}
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except Exception:
+                        args = {}
+                    futures[pool.submit(execute_tool, name, args)] = tc
+
+                for f in as_completed(futures):
+                    tc = futures[f]
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                    except Exception:
+                        args = {}
+                    try:
+                        result = f.result()
+                    except Exception as e:
+                        result = f"工具执行异常: {e}"
+                    results_by_id[tc["id"]] = (name, args, result)
+
+            # 按原始顺序添加结果
+            for tc in tool_calls:
+                name, args, result = results_by_id[tc["id"]]
+                ui.print_tool_call(name, args)
+                ui.print_tool_result(result)
+                messages.append({
+                    "role": "tool", "tool_call_id": tc["id"],
+                    "content": result,
+                })
+            continue  # 并行执行完毕，跳过串行循环
+
         for tc in tool_calls:
             fn = tc["function"]
             name = fn["name"]
