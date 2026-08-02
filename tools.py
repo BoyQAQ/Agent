@@ -362,6 +362,14 @@ def execute_tool(name: str, args: dict) -> str:
             return f"🛡 沙箱拦截: {rejection}"
         try:
             p = Path(args["file_path"])
+            # 编辑技能文件前自动快照（用于回滚）
+            if "SKILL.md" in str(p) and ".mini-agent/skills/" in str(p):
+                try:
+                    from skills import snapshot_skill
+                    skill_name = str(p.parent).split("/")[-1].split("\\")[-1]
+                    snapshot_skill(skill_name)
+                except Exception:
+                    pass
             if not p.is_file():
                 return f"错误: 文件不存在 — {args['file_path']}"
             content = p.read_text(encoding="utf-8")

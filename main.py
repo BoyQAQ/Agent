@@ -412,6 +412,26 @@ def _dispatch_command(user_input: str, state: dict) -> str | None:
             ui.print_error(f"查询失败: {e}")
         return HANDLED
 
+    # ── /skill-history ──
+    if cmd == "/skill-history":
+        if not arg:
+            ui.print_info("用法: /skill-history <技能名>")
+            return HANDLED
+        try:
+            from skills import get_skill_history, get_skill_stats
+            history = get_skill_history(arg, limit=20)
+            stats = get_skill_stats(arg)
+            if stats:
+                print(f"  /{arg}: {stats['total']}次调用 ({stats['success']}成功)")
+            if history:
+                bar = "".join("✅" if h["success"] else "❌" for h in reversed(history))
+                print(f"  最近{len(history)}次: {bar}")
+            elif not stats:
+                ui.print_info(f"技能 /{arg} 无使用记录")
+        except Exception as e:
+            ui.print_error(f"查询失败: {e}")
+        return HANDLED
+
     # ── /model ──
     if cmd == "/model":
         result = model_picker(

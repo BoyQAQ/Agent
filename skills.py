@@ -239,17 +239,47 @@ def reset_skill_cache():
     _cache_mtime = 0.0
 
 
-# ─── 使用追踪（MySQL 优先，文件兜底）─────────────────────────────────
+# ─── 使用追踪（MySQL + 滑动窗口日志 + 退化检测）───────────────────
 
-def record_skill_usage(skill_name: str, success: bool):
-    """记录一次技能使用"""
+def _ensure_usage_log_table():
+    """创建逐次调用日志表"""
     if _db_ok():
         try:
             from db import get_connection
             conn = get_connection()
             try:
-                ph = _project_hash()
                 with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS skill_usage_log (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            skill_name VARCHAR(100) NOT NULL,
+                            project_hash VARCHAR(32) NOT NULL,
+                            success TINYINT(1) NOT NULL DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            INDEX idx_skill_project (skill_name, project_hash, created_at)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+
+def record_skill_usage(skill_name: str, success: bool):
+    """记录一次技能使用（写日志 + 更新计数 + 退化检测）"""
+    # 逐次日志（用于滑动窗口）
+    if _db_ok():
+        try:
+            from db import get_connection
+            ph = _project_hash()
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO skill_usage_log (skill_name, project_hash, success) VALUES (%s, %s, %s)",
+                        (skill_name, ph, 1 if success else 0),
+                    )
                     cur.execute(
                         "UPDATE skills SET total_uses = total_uses + 1, "
                         "success_count = success_count + %s, last_used = NOW() "
@@ -259,11 +289,144 @@ def record_skill_usage(skill_name: str, success: bool):
                 conn.commit()
             finally:
                 conn.close()
+
+            # 退化检测（仅在有足够样本时）
+            degraded = _detect_degradation(skill_name)
+            if degraded:
+                _warn_degradation(skill_name, degraded)
+
             return
         except Exception:
             pass
     # 文件兜底
     _fallback_record(skill_name, success)
+
+
+def _detect_degradation(skill_name: str) -> dict | None:
+    """检测技能是否退化：对比最近10次 vs 前10次成功率"""
+    if not _db_ok():
+        return None
+    try:
+        from db import get_connection
+        ph = _project_hash()
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                # 最近 10 次
+                cur.execute(
+                    "SELECT AVG(success) as rate, COUNT(*) as cnt FROM "
+                    "(SELECT success FROM skill_usage_log "
+                    "WHERE skill_name=%s AND project_hash=%s "
+                    "ORDER BY created_at DESC LIMIT 10) t",
+                    (skill_name, ph),
+                )
+                recent = cur.fetchone()
+                # 前 10 次
+                cur.execute(
+                    "SELECT AVG(success) as rate, COUNT(*) as cnt FROM "
+                    "(SELECT success FROM skill_usage_log "
+                    "WHERE skill_name=%s AND project_hash=%s "
+                    "ORDER BY created_at DESC LIMIT 10 OFFSET 10) t",
+                    (skill_name, ph),
+                )
+                older = cur.fetchone()
+
+            if recent and older and recent["cnt"] >= 5 and older["cnt"] >= 5:
+                recent_rate = float(recent["rate"] or 0)
+                older_rate = float(older["rate"] or 0)
+                if older_rate > 0.5 and recent_rate < older_rate * 0.5:
+                    # 成功率腰斩 → 退化
+                    return {
+                        "recent_rate": recent_rate,
+                        "older_rate": older_rate,
+                        "recent_count": recent["cnt"],
+                    }
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return None
+
+
+def _warn_degradation(skill_name: str, info: dict):
+    """输出退化警告"""
+    import ui
+    ui.print_info(
+        f"⚠ 技能 /{skill_name} 可能退化: "
+        f"最近{info['recent_count']}次成功率 {info['recent_rate']:.0%}, "
+        f"此前 {info['older_rate']:.0%}"
+    )
+    # 尝试自动回滚
+    if restore_from_snapshot(skill_name):
+        ui.print_info(f"  已自动回滚 /{skill_name} 到上一个版本")
+
+
+# ─── 版本快照 ────────────────────────────────────────────
+
+def snapshot_skill(skill_name: str) -> bool:
+    """编辑前备份 SKILL.md"""
+    skill = get_skill_by_name(skill_name)
+    if not skill:
+        return False
+    try:
+        src = Path(skill.skill_dir) / "SKILL.md"
+        if not src.is_file():
+            return False
+        ts = int(time.time())
+        backup = Path(skill.skill_dir) / f"SKILL.md.{ts}.bak"
+        backup.write_text(src.read_text(encoding="utf-8"))
+        # 只保留最近 5 个快照
+        snaps = sorted(Path(skill.skill_dir).glob("SKILL.md.*.bak"))
+        for old in snaps[:-5]:
+            old.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def restore_from_snapshot(skill_name: str) -> bool:
+    """回滚到最新快照"""
+    skill = get_skill_by_name(skill_name)
+    if not skill:
+        return False
+    try:
+        snaps = sorted(Path(skill.skill_dir).glob("SKILL.md.*.bak"), reverse=True)
+        if not snaps:
+            return False
+        src = Path(skill.skill_dir) / "SKILL.md"
+        src.write_text(snaps[0].read_text(encoding="utf-8"))
+        snaps[0].unlink()  # 删除已用的快照
+        reset_skill_cache()
+        return True
+    except Exception:
+        return False
+
+
+def get_skill_history(skill_name: str, limit: int = 20) -> list[dict]:
+    """查询技能的逐次调用历史"""
+    if not _db_ok():
+        return []
+    try:
+        from db import get_connection
+        ph = _project_hash()
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT success, created_at FROM skill_usage_log "
+                    "WHERE skill_name=%s AND project_hash=%s "
+                    "ORDER BY created_at DESC LIMIT %s",
+                    (skill_name, ph, limit),
+                )
+                return [
+                    {"success": bool(r["success"]),
+                     "time": r["created_at"].strftime("%m-%d %H:%M")}
+                    for r in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+    except Exception:
+        return []
 
 
 def _fallback_usage_path() -> Path:
